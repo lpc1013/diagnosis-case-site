@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d9488" />
+  <title>临床思维训练 · 答案对照站</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="assets/style.css?v=53" />
+</head>
+<body class="sb-open">  <!-- v50.1 初始展开态（防 FOUC 布局跳变） -->
+  <header class="topbar">
+    <button id="sbToggle" class="sb-toggle" type="button" aria-expanded="true" aria-controls="caseList" aria-label="切换病例列表">☰</button>
+    <div class="brand">
+      <span class="logo">⊕</span>
+      <div>
+        <div class="brand-title">临床思维训练 · 答案对照站</div>
+        <div class="brand-sub">南医大 4 例练习 · 三层答案（通用题目 / 选项反馈 / 正确答案）随时对照</div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div class="mode-switch">
+        <button id="btnPractice" class="mode-btn">练习模式</button>
+        <button id="btnAnswer" class="mode-btn">答案模式</button>
+      </div>
+      <div class="search-wrap">
+        <span class="search-icon">🔍</span>
+        <input id="search" class="search" type="search" placeholder="在当前板块内搜索…" autocomplete="off" />
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">练习病例</div>
+      <nav id="caseList" class="case-list"></nav>
+      <div class="sidebar-foot">数据来自评分报告与系统原始结构<br/>仅供自用 / 学习</div>
+    </aside>
+
+    <main id="main" class="main">
+      <div id="rpHint" class="rp-hint" hidden>
+        <span class="rp-hint-ic">💡</span>
+        <span class="rp-hint-tx">完成各模块后，点右下角 <b>「报告 · 提交」</b>，面板底部点 <b>「提交本病例答卷」</b> 即生成评分。</span>
+        <button class="rp-hint-x" id="rpHintX" type="button" aria-label="我知道了">×</button>
+      </div>
+
+      <section id="caseView" class="case-view">
+        <div id="caseHead" class="case-head"></div>
+        <div class="tabbar">
+          <div id="tabs" class="tabs"></div>
+          <span id="necOnlyWrap"><label class="toggle"><input type="checkbox" id="necOnly" /> 只看必要项</label></span>
+        </div>
+        <div id="section" class="section"></div>
+      </section>
+    </main>
+
+    <aside class="report-col">
+      <div id="reportPanel" class="report-panel"></div>
+    </aside>
+  </div>
+
+  <div id="sbMask"></div>
+  <div id="rpMask"></div>
+  <button id="rpToggle" type="button">📋 检查记录</button>
+
+  <script src="assets/app.js?v=53"></script>
+</body>
+</html>

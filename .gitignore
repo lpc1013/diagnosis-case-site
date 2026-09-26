@@ -1,0 +1,44 @@
+# ===== 敏感信息 / 校内工具链（含账号密码与内网端点，禁止入库） =====
+.workbuddy/
+recon/
+archive/
+项目说明.md
+NEXT_OPTIMIZATION_PLAN.md
+PLAN_ROUND3.md
+SKILL.md
+njmu_crawler.js
+njmu_overall_crawler.js
+fill_case.js
+fill_case.js.bak_20260809
+recon_incr.js
+recon_reports.js
+submit_report.js
+_test_login.js
+run_accounts.ps1
+run_all.ps1
+run_all.sh
+
+# ===== 大体量生成数据（由上述私有爬虫再生，见 README） =====
+site/data/cases.json
+site/data/diaglib.json
+diag_cache.json
+
+# ===== 含凭据/内网原始爬取（已确认含学号等凭据） =====
+overall_cases/_源数据/
+overall_cases/index.md
+
+# ===== 大体量诊断库导出（再生数据） =====
+overall_cases/（通用）题目/诊断库.md
+
+# ===== 历史评审记录（已另存 WorkBuddy 资料库，体积大，不入库） =====
+网站评审_*.html
+网站v*.html
+
+# ===== 备份 / 日志 / 截图（非应用本体） =====
+*.bak_*
+*.log
+site/*.png
+
+# ===== 系统 / 编辑器 =====
+.DS_Store
+Thumbs.db

@@ -1,0 +1,817 @@
+:root {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --border: #e4e9f0;
+  --border-strong: #d2dae6;
+  --text: #1f2a37;
+  --muted: #6b7585;
+  --primary: #0d9488;
+  --primary-d: #0f766e;
+  --accent: #2563eb;
+  --nec-bg: #dcfce7;
+  --nec-fg: #15803d;
+  --shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+  --radius: 10px;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; overflow-x: hidden; }  /* v52 横向溢出兜底 */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* 顶栏 */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 10px 20px;
+  background: linear-gradient(180deg, #ffffff, #fbfcfe);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.logo {
+  width: 38px; height: 38px; border-radius: 10px;
+  display: grid; place-items: center; font-size: 22px; color: #fff;
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+}
+.brand-title { font-weight: 700; font-size: 16px; }
+.brand-sub { font-size: 12px; color: var(--muted); }
+.topbar-actions { display: flex; align-items: center; gap: 12px; }
+.search-wrap { position: relative; display: flex; align-items: center; }
+.search-icon { position: absolute; left: 12px; font-size: 14px; opacity: .7; pointer-events: none; }
+.search {
+  width: 320px; padding: 9px 12px 9px 36px; border: 2px solid var(--border-strong);
+  border-radius: 10px; outline: none; font-size: 14px; background: #fff; transition: .15s;
+}
+.search:focus { border-color: var(--primary); box-shadow: 0 0 0 4px rgba(13,148,136,.14); }
+.search.wide { width: 100%; max-width: 520px; padding: 11px 14px 11px 38px; }
+.toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
+.lib-btn {
+  border: 1px solid var(--border-strong); background: #fff; color: var(--text);
+  padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.lib-btn:hover { border-color: var(--primary); color: var(--primary-d); }
+.lib-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* 练习/答案模式切换（分段控件） */
+.mode-switch { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.mode-btn {
+  border: none; background: #fff; color: var(--text);
+  padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
+  transition: .15s;
+}
+.mode-btn + .mode-btn { border-left: 1px solid var(--border-strong); }
+.mode-btn:hover { background: #f1f5f9; }
+.mode-btn.active { background: var(--primary-d); color: #fff; }
+.mode-switch .mode-btn.active:hover { background: var(--primary-d); }
+
+/* 布局（三栏） */
+.layout { display: flex; height: calc(100vh - 60px); min-height: calc(100vh - 60px); align-items: stretch; }  /* v52 固定高度：main/report-col 内部滚动，页面不整体滚 */
+.sidebar {
+  width: 250px; flex: none; background: var(--panel);
+  border-right: 1px solid var(--border); padding: 16px 12px;
+  display: flex; flex-direction: column; gap: 8px; overflow: auto;
+}
+.sidebar-title { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 0 8px 4px; }
+.case-list { display: flex; flex-direction: column; gap: 8px; }
+.case-card {
+  text-align: left; border: 1px solid var(--border); background: #fff;
+  border-radius: var(--radius); padding: 11px 12px; cursor: pointer;
+  transition: .15s; display: flex; flex-direction: column; gap: 2px;
+}
+.case-card:hover { border-color: var(--primary); transform: translateY(-1px); box-shadow: var(--shadow); }
+.case-card.active { border-color: var(--primary); background: #ecfdf5; box-shadow: inset 3px 0 0 var(--primary), var(--shadow); }
+.case-card .c-name { font-weight: 700; font-size: 14px; }
+.case-card .c-meta { font-size: 12px; color: var(--muted); }
+.case-card .c-score { font-size: 12px; color: var(--primary-d); margin-top: 2px; }
+.sidebar-foot { margin-top: auto; font-size: 11px; color: var(--muted); padding: 8px; border-top: 1px dashed var(--border); }
+
+.main { flex: 1; padding: 20px 24px 60px; overflow: auto; min-width: 0; overscroll-behavior: contain; }
+.case-view, .lib-view { max-width: 100%; margin: 0 auto; }
+
+/* 右侧报告栏 */
+.report-col {
+  width: 380px; flex: none; background: var(--panel);
+  border-left: 1px solid var(--border); padding: 16px 16px 40px; overflow: auto; overscroll-behavior: contain;
+  line-height: 1.75;
+}
+.report-panel { display: flex; flex-direction: column; gap: 12px; }
+.rp-title {
+  font-weight: 700; font-size: 14px; color: #2563eb;
+  padding-bottom: 6px; border-bottom: 2px solid #bfdbfe;
+  overflow-wrap: anywhere;  /* v53+ 超长诊断名断词，防右栏内部横向溢出 */
+}
+/* 增量检查记录（模仿官网右侧面板） */
+.rp-records { display: flex; flex-direction: column; gap: 0; }
+.rp-record {
+  border-bottom: 1px solid #e5e7eb; padding: 11px 6px; line-height: 1.75;
+}
+.rp-record:last-child { border-bottom: none; }
+.rp-rec-q { overflow-wrap: anywhere;
+  font-weight: 600; font-size: 13px; color: var(--text);
+}
+.rp-rec-a {
+  font-size: 12.5px; color: #0f766e; margin-top: 4px;
+  line-height: 1.6; padding-left: 12px; white-space: pre-wrap;
+}
+/* 病史检查记录：逐条累加的问答 */
+.rp-qa { padding: 8px 0; border-bottom: 1px dashed #cbd5e1; }
+.rp-qa:last-child { border-bottom: none; }
+.rp-q { font-weight: 600; font-size: 13px; color: var(--text); }
+.rp-a { font-size: 12.5px; color: #0f766e; margin-top: 4px; padding-left: 12px; white-space: pre-wrap; line-height: 1.6; }
+/* 真实检查记录（来自官网增量爬取） */
+.rp-records-label {
+  font-size: 12.5px; color: var(--muted); margin-bottom: 8px;
+}
+.rp-checkrecord {
+  background: #f0fdfa; border: 1px solid #bbf7d0; border-radius: 8px;
+  padding: 14px 16px; font-size: 13px; line-height: 1.75;
+  white-space: normal; word-break: break-word; color: var(--text);
+  max-height: calc(100vh - 220px); overflow-y: auto;
+}
+.rp-checkrecord .cr-sec {
+  font-weight: 700; font-size: 13.5px; color: #0f766e;
+  margin: 12px 0 4px; padding-bottom: 3px; border-bottom: 1px solid #99f6e4;
+}
+.rp-checkrecord .cr-sec:first-child { margin-top: 0; }
+.rp-checkrecord .cr-sub {
+  font-weight: 600; font-size: 12.5px; color: #047857; margin: 8px 0 2px;
+}
+.rp-checkrecord .cr-kv {
+  display: flex; gap: 6px; padding: 2px 0 2px 12px; font-size: 12.5px;
+}
+.rp-checkrecord .cr-k {
+  color: #475569; font-weight: 600; flex: 0 0 auto; min-width: 78px;
+}
+.rp-checkrecord .cr-val {
+  padding: 2px 0 2px 12px; font-size: 12.5px; color: #334155;
+}
+/* 底部可展开完整报告 */
+.rp-report { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; margin-top: 8px; }
+.rp-report > summary { cursor: pointer; list-style: none; padding: 10px 12px; background: #f8fafc; font-weight: 600; font-size: 13px; }
+.rp-report > summary::-webkit-details-marker { display: none; }
+.rp-report > summary::before { content: "▸"; color: var(--muted); margin-right: 8px; }
+.rp-report[open] > summary::before { content: "▾"; }
+/* 答案模式辅助/体格：右栏逐项检查结果（清爽卡片） */
+.rp-results { display: flex; flex-direction: column; gap: 8px; }
+.rp-result { border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; background: #fff; }
+.rp-result-name { font-weight: 600; font-size: 13.5px; color: var(--text); }
+.rp-result-val { font-size: 13px; color: #1d4ed8; font-weight: 600; margin-top: 3px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+.rp-result .ref { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.rp-result .sig { font-size: 12px; color: #475569; border-top: 1px dashed var(--border); padding-top: 6px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+.rp-sub { font-weight: 600; font-size: 12.5px; color: var(--primary-d); margin: 8px 12px 4px; }
+.rp-pre {
+  margin: 0 12px 12px; padding: 10px 12px; background: #f8fafc; border: 1px solid var(--border);
+  border-radius: 8px; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+  color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* 练习模式：选项卡片 */
+.psec { display: flex; flex-direction: column; gap: 12px; }
+.pgroup { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.pgroup-head { padding: 11px 16px; font-weight: 700; display: flex; align-items: center; gap: 10px; background: #fbfdff; border-bottom: 1px solid var(--border); }
+.pgroup-head .g-sub { font-weight: 500; font-size: 12px; color: var(--muted); }
+.pgroup-head .g-count { margin-left: auto; font-size: 12px; color: var(--muted); }
+.pgroup-body { padding: 10px 16px 14px; display: flex; flex-direction: column; gap: 8px; }
+.pcard, .aux-row {
+  text-align: left; border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 10px 12px; background: #fff; cursor: pointer; transition: .12s;
+  display: flex; flex-direction: column; gap: 4px; position: relative;
+}
+.pcard:hover, .aux-row:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+.pcard.nec, .aux-row.nec { border-left: 3px solid var(--nec-fg); }
+.pcard.picked, .aux-row.picked { background: #f0fdfa; border-color: var(--primary); }
+.pcard .p-name { font-weight: 600; font-size: 13.5px; flex: 1; padding-right: 64px; }
+.pcard .attr { font-size: 12px; color: var(--muted); background: #eef2f7; border-radius: 5px; padding: 1px 7px; align-self: flex-start; }
+.b-key, .b-picked, .b-need {
+  position: absolute; top: 10px; right: 12px; font-size: 11px; font-weight: 700;
+  border-radius: 999px; padding: 1px 9px;
+}
+.b-key { background: var(--nec-bg); color: var(--nec-fg); }
+.b-picked { background: #e0f2fe; color: #0369a1; }
+.b-need { background: #fef3c7; color: #a16207; }
+.p-reply { font-size: 12.5px; color: #0f766e; line-height: 1.7; background: #f7fef9; border-radius: 6px; padding: 8px 10px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
+.p-reply .ref { color: var(--muted); margin-top: 6px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+.p-reply .sig { color: #475569; margin-top: 6px; white-space: pre-wrap; word-break: break-word; line-height: 1.7; }
+
+/* 病例头 */
+.case-head {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 24px; margin-bottom: 14px; box-shadow: var(--shadow);
+}
+.case-head h1 { margin: 0 0 6px; font-size: 20px; }
+.case-head .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.chip { background: #eef2f7; color: #334155; border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+.chip b { color: var(--text); }
+.stat-row { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12.5px; }
+.stat-row .st { background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; }
+.stat-row .st b { color: var(--primary-d); }
+
+/* tabs + 只看必要项 同一行 */
+.tabbar { display: flex; align-items: center; gap: 18px; margin-bottom: 14px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+#necOnlyWrap { margin-left: auto; }
+.tab {
+  border: 1px solid var(--border-strong); background: #fff; color: var(--text);
+  padding: 8px 16px; border-radius: 999px; cursor: pointer; font-size: 13.5px; font-weight: 600;
+}
+.tab:hover { border-color: var(--primary); color: var(--primary-d); }
+.tab.active { background: var(--primary-d); color: #fff; border-color: var(--primary-d); box-shadow: 0 4px 12px rgba(13,148,136,.28); transform: translateY(-1px); }
+.tab.active .badge { color: #fff; opacity: 1; }
+.tab .badge { font-size: 11px; opacity: .85; margin-left: 6px; }
+
+/* section */
+.section { display: flex; flex-direction: column; gap: 12px; }
+.group {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); overflow: hidden;
+}
+.group > summary {
+  cursor: pointer; list-style: none; padding: 12px 16px; font-weight: 700;
+  display: flex; align-items: center; gap: 10px; background: #fbfdff; user-select: none;
+}
+.group > summary::-webkit-details-marker { display: none; }
+.group > summary::before { content: "▸"; color: var(--muted); transition: .15s; }
+.group[open] > summary::before { transform: rotate(90deg); }
+.group .g-sub { font-weight: 500; font-size: 12px; color: var(--muted); }
+.group .g-count { margin-left: auto; font-size: 12px; color: var(--muted); }
+/* 答案模式第一级标题（病史采集下的分类、诊断下的分类）：与答案模式统一字号 14px */
+.sec-h1 { font-size: 14px; font-weight: 700; }
+.group-body { padding: 6px 16px 14px; display: flex; flex-direction: column; gap: 8px; }
+
+/* item */
+.item {
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: #fff;
+}
+.item.nec { border-left: 3px solid var(--nec-fg); background: #f7fef9; }
+/* 寻血标记：祖先结构含正确（必要）项时点亮，便于像寻血一样逐层定位 */
+.scent-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--primary); flex: none; align-self: center;
+  box-shadow: 0 0 0 3px rgba(13,148,136,.16);
+  animation: scent-pulse 1.8s ease-in-out infinite;
+}
+@keyframes scent-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(13,148,136,.16); }
+  50% { box-shadow: 0 0 0 5px rgba(13,148,136,.07); }
+}
+.group.has-nec > summary { background: #f0fdfa; }
+.group.has-nec > summary::before { color: var(--primary); }
+.item summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: baseline; }
+.item summary::-webkit-details-marker { display: none; }
+.item summary::before { content: "▸"; color: var(--muted); }
+.item[open] summary::before { transform: rotate(90deg); display: inline-block; }
+.item .i-name { font-weight: 600; flex: 1; }
+.item .i-q { font-weight: 600; flex: 1; }
+.badge-nec { background: var(--nec-bg); color: var(--nec-fg); border-radius: 999px; padding: 1px 9px; font-size: 11px; font-weight: 700; flex: none; }
+.badge-score { background: #eef2f7; color: #475569; border-radius: 6px; padding: 1px 7px; font-size: 11px; flex: none; }
+.item .i-detail { margin-top: 8px; padding-left: 4px; display: flex; flex-direction: column; gap: 6px; }
+.kv { font-size: 13px; line-height: 1.6; }
+.kv .k { color: var(--muted); margin-right: 6px; }
+.kv .v { color: var(--text); word-break: break-word; }
+.kv.reply .v { color: #0f766e; }
+.kv.std .v { color: #b45309; font-weight: 600; }
+.kv.result .v { color: #1d4ed8; font-weight: 600; }
+.ref { font-size: 12px; color: var(--muted); margin-top: 6px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+.sig { font-size: 12px; color: #475569; border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 8px; white-space: pre-wrap; word-break: break-word; line-height: 1.7; }
+
+/* 答案模式字号统一：单一尺度（标题14 / 正文13 / 次级12），左栏与右栏报告一致 */
+.section .item summary .i-name,
+.section .item summary .i-q { font-size: 14px; font-weight: 600; }
+.section .group > summary { font-size: 14px; font-weight: 700; }
+.section .kv { font-size: 13px; }
+.section .ref,
+.section .sig { font-size: 12px; }
+.section .g-count,
+.section .g-sub { font-size: 12px; }
+.rp-title { font-size: 14px; }
+.rp-sub { font-size: 13px; font-weight: 700; }
+.rp-pre { font-size: 13px; line-height: 1.7; }
+.attr { font-size: 12px; color: var(--muted); background: #eef2f7; border-radius: 5px; padding: 1px 7px; flex: none; }
+
+/* 诊断 */
+.diag-cls { margin-bottom: 12px; }
+.diag-cls > summary { background: #fbfdff; }
+.cls-tag { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; }
+/* 诊断下「主要/次要/鉴别/疑似诊断」为一级标题，放大字号（覆盖徽章默认 11px） */
+.diag-cls > summary .cls-tag { font-size: 14px; padding: 4px 14px; }
+.cls-主要诊断 { background: var(--nec-bg); color: var(--nec-fg); }
+.cls-次要诊断 { background: #dbeafe; color: #1d4ed8; }
+.cls-鉴别诊断 { background: #fef9c3; color: #a16207; }
+.cls-疑似诊断 { background: #fae8ff; color: #a21caf; }
+.cls-未分类 { background: #e5e7eb; color: #374151; }
+.diag {
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: #fff;
+}
+.diag summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: center; }
+.diag summary::-webkit-details-marker { display: none; }
+.diag summary::before { content: "▸"; color: var(--muted); }
+.diag[open] summary::before { transform: rotate(90deg); }
+.diag .d-name { font-weight: 700; flex: 1; overflow-wrap: anywhere; }
+.diag .d-syn { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.ev-tree { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.ev-src { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.ev-src > summary { cursor: pointer; list-style: none; padding: 8px 12px; background: #f8fafc; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.ev-src > summary::-webkit-details-marker { display: none; }
+.ev-src > summary::before { content: "▸"; color: var(--muted); }
+.ev-src[open] > summary::before { transform: rotate(90deg); }
+.ev-src .ev-cnt { margin-left: auto; font-size: 12px; color: var(--muted); }
+.ev-list { padding: 6px 12px 10px; display: flex; flex-direction: column; gap: 6px; }
+.ev { font-size: 13px; border-left: 2px solid var(--border-strong); padding-left: 8px; display: flex; align-items: flex-start; gap: 10px; }  /* v52 按钮行内右侧 */
+.ev .ev-text { flex: 1 1 auto; min-width: 0; }
+.ev .ev-content { word-break: break-word; overflow-wrap: anywhere; }
+.ev .ev-label { flex: none; margin-top: 1px; }
+.ev .ev-item { color: var(--muted); font-size: 12px; }
+.ev .ev-content { color: var(--text); }
+.ev .ev-score { color: var(--primary-d); font-size: 11px; margin-left: 6px; }
+
+/* 诊断库 */
+.lib-head h2 { margin: 0 0 12px; font-size: 18px; }
+.lib-stat { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.lib-results { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; max-height: 70vh; overflow: auto; }
+.lib-row { display: flex; gap: 12px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-size: 13px; }
+.lib-row .lc { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; flex: none; width: 90px; }
+.lib-row .ln { flex: 1; }
+.lib-row mark { background: #fde68a; padding: 0 1px; border-radius: 2px; }
+.empty { color: var(--muted); padding: 44px 26px; text-align: center; font-size: 14px; line-height: 1.8; }
+.empty::before { content: ""; display: block; width: 34px; height: 34px; margin: 0 auto 12px; border: 2px dashed #cbd5e1; border-radius: 50%; }
+
+/* 练习模式：嵌套缩进 */
+.pindent { padding-left: 8px; border-left: 2px dashed var(--border); margin-left: 4px; }
+.pcategory { display: flex; flex-direction: column; gap: 12px; }
+
+/* 诊断练习模块 */
+.diag-practice { gap: 16px; }
+.diag-search-box { position: relative; }
+.diag-suggestions {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 10;
+  background: #fff; border: 1px solid var(--border-strong); border-radius: 10px;
+  box-shadow: var(--shadow); max-height: 320px; overflow: auto; padding: 6px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.diag-sug {
+  text-align: left; border: none; background: #fff; border-radius: 6px;
+  padding: 7px 10px; cursor: pointer; font-size: 13px; display: flex; gap: 10px;
+}
+.diag-sug:hover { background: #f0fdfa; }
+.diag-selected-head { font-weight: 700; font-size: 14px; color: var(--text); margin-top: 4px; }
+
+/* 支持/不支持标签 */
+.ev-label {
+  border: 1px solid var(--border-strong); background: #fff; border-radius: 999px;
+  padding: 2px 10px; font-size: 12px; cursor: pointer; font-weight: 600; margin-left: 8px;
+  transition: .15s;
+}
+.ev-label.green { color: #15803d; border-color: #86efac; }
+.ev-label.green.active { background: #16a34a; color: #fff; border-color: #16a34a; }
+.ev-label.red { color: #b91c1c; border-color: #fca5a5; }
+.ev-label.red.active { background: #dc2626; color: #fff; border-color: #dc2626; }
+.ev-label:hover { box-shadow: var(--shadow); }
+
+/* ===== 练习模式分组折叠（pgroup 作为 details） ===== */
+.pgroup > summary.pgroup-head { cursor: pointer; list-style: none; }
+.pgroup > summary.pgroup-head::-webkit-details-marker { display: none; }
+.pgroup > summary.pgroup-head::before { content: "▸"; color: var(--muted); transition: .15s; margin-right: 2px; }
+.pgroup[open] > summary.pgroup-head::before { transform: rotate(90deg); }
+
+/* 病史练习分组 */
+.pcategory { margin-bottom: 6px; }
+.pcat-head { font-size: 13px; font-weight: 800; color: var(--primary-d); padding: 4px 2px 8px; }
+.pcat-items { display: flex; flex-direction: column; gap: 8px; }
+.pindent { padding-left: 16px; }
+
+/* ===== 治疗场景闸门 ===== */
+.scene-gate { background: var(--panel); border: 1px dashed var(--border-strong); border-radius: var(--radius); padding: 28px 20px; text-align: center; }
+.scene-gate-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
+.scene-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.scene-btn {
+  border: 1px solid var(--primary); background: #fff; color: var(--primary-d);
+  border-radius: 10px; padding: 12px 22px; font-size: 15px; font-weight: 700; cursor: pointer; transition: .15s;
+}
+.scene-btn:hover { background: var(--primary); color: #fff; }
+.scene-hint { margin-top: 16px; font-size: 12.5px; color: var(--muted); }
+.scene-active { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+.scene-active b { color: var(--text); }
+.scene-change { margin-left: 8px; border: 1px solid var(--border-strong); background: #fff; border-radius: 6px; padding: 2px 10px; cursor: pointer; font-size: 12px; }
+
+/* ===== 诊断练习：分类按钮 + 选中列表 ===== */
+.diag-selected { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; background: var(--panel); }
+.diag-selected.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(13,148,136,.15); }
+.diag-selected-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.diag-selected-name { font-weight: 700; font-size: 15px; color: var(--text); }
+.cls-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.cls-btn {
+  border: 1px solid var(--border-strong); background: #fff; border-radius: 999px;
+  padding: 3px 11px; font-size: 12px; cursor: pointer; font-weight: 700; transition: .15s;
+}
+.cls-btn[data-cls="主要诊断"] { color: #0f766e; border-color: #99f6e4; background: #f0fdfa; }
+.cls-btn[data-cls="主要诊断"].active { background: #0d9488; color: #fff; border-color: #0d9488; }
+.cls-btn[data-cls="次要诊断"] { color: #1d4ed8; border-color: #bfdbfe; background: #eff6ff; }
+.cls-btn[data-cls="次要诊断"].active { background: #2563eb; color: #fff; border-color: #2563eb; }
+.cls-btn[data-cls="鉴别诊断"] { color: #a16207; border-color: #fde68a; background: #fefce8; }
+.cls-btn[data-cls="鉴别诊断"].active { background: #d97706; color: #fff; border-color: #d97706; }
+.cls-btn[data-cls="疑似诊断"] { color: #a21caf; border-color: #f5d0fe; background: #fdf4ff; }
+.cls-btn[data-cls="疑似诊断"].active { background: #c026d3; color: #fff; border-color: #c026d3; }
+.cls-btn:hover { box-shadow: var(--shadow); }
+.diag-evtree { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.diag-preview { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.diag-prev-group { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.diag-prev-h { font-size: 12px; font-weight: 700; padding: 5px 10px; }
+.diag-prev-h.support { background: #f0fdf4; color: #15803d; }
+.diag-prev-h.unsupport { background: #fef2f2; color: #b91c1c; }
+.diag-prev-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--border); }
+.diag-prev-badge { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; flex: none; }
+.diag-prev-badge.support { background: #16a34a; color: #fff; }
+.diag-prev-badge.unsupport { background: #dc2626; color: #fff; }
+.diag-prev-text { flex: 1; }
+.diag-prev-label { font-size: 13px; }
+.diag-prev-detail { font-size: 12px; color: #475569; line-height: 1.5; margin-top: 2px; }
+
+/* ===== 诊断右侧依据池 ===== */
+.ev-pool { display: flex; flex-direction: column; gap: 10px; }
+.ev-pool-item { border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; background: #fff; }
+.ev-pool-label-row { display: flex; align-items: flex-start; gap: 8px; }
+.ev-pool-label-row .ev-pool-label { flex: 1 1 auto; min-width: 0; }
+.ev-pool-label-row .ev-pool-btns { flex: none; margin-top: 0; }
+.ev-pool-detail { word-break: break-word; overflow-wrap: anywhere; }
+.ev-pool-src { font-size: 11px; color: var(--muted); background: #eef2f7; border-radius: 5px; padding: 1px 7px; }
+.ev-pool-label { font-weight: 600; font-size: 13px; margin: 4px 0 2px; overflow-wrap: anywhere; }
+.ev-pool-detail { font-size: 12px; color: #475569; line-height: 1.5; }
+.ev-pool-btns { margin-top: 6px; }
+
+/* ===== 限制进度条（病史/体格/辅助/治疗：项目数 + 辅助花费）===== */
+.limit-wrap { margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; }
+.limit-bar { border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; background: #fff; }
+.limit-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.limit-label { font-size: 13px; font-weight: 700; }
+.limit-val { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.limit-track { position: relative; height: 12px; border-radius: 999px; background: #eef2f7; overflow: hidden; margin: 7px 0 5px; }
+.limit-zone { position: absolute; top: 0; height: 100%; z-index: 1; }
+.limit-zone.zone-g { background: #bbf7d0; }
+.limit-zone.zone-o { background: #fde68a; }
+.limit-zone.zone-r { background: #fecaca; }
+.limit-fill { position: relative; z-index: 2; height: 100%; border-radius: 999px; transition: width .25s ease; }
+.limit-marker { position: absolute; z-index: 3; top: 0; width: 2px; height: 100%; background: #334155; opacity: .45; }
+.limit-marker.mk-r { background: #b91c1c; opacity: .6; }
+.limit-note { font-size: 12px; }
+.limit-bar.green .limit-fill { background: #16a34a; }
+.limit-bar.green .limit-note { color: #15803d; }
+.limit-bar.orange .limit-fill { background: #f59e0b; }
+.limit-bar.orange .limit-note { color: #b45309; }
+.limit-bar.red .limit-fill { background: #dc2626; }
+.limit-bar.red .limit-note { color: #b91c1c; }
+.limit-bar.red { border-color: #fecaca; background: #fff7f7; }
+
+/* ===================================================================
+   响应式：平板 / 手机
+   桌面默认隐藏移动端组件（抽屉遮罩 + 悬浮按钮）
+   =================================================================== */
+#rpMask, #rpToggle { display: none; }
+
+/* --- 中等屏：收窄两侧栏，避免中间被挤扁 --- */
+@media (max-width: 1240px) {
+  .sidebar { width: 208px; }
+  .report-col { width: 332px; }
+  .search { width: 220px; }
+  .main { padding: 18px 16px 60px; }
+}
+
+/* --- 窄屏（小平板横屏）：进一步压缩 --- */
+@media (max-width: 1024px) {
+  .sidebar { width: 184px; padding: 14px 10px; }
+  .report-col { width: 300px; padding: 14px 12px 40px; }
+  .search { width: 170px; }
+  .brand-sub { display: none; }
+}
+
+/* --- 手机 / 竖屏平板：单列 + 右栏改底部抽屉 --- */
+@media (max-width: 860px) {
+  /* 顶栏：第一行品牌，第二行模式切换+搜索框并排；不再 sticky（省竖直空间） */
+  .topbar {
+    position: static;
+    flex-direction: row; align-items: center; flex-wrap: wrap;
+    gap: 6px; padding: 8px 12px;
+  }
+  .brand { flex: 1 1 100%; min-width: 0; gap: 10px; margin-right: auto; }
+  .logo { width: 32px; height: 32px; font-size: 18px; border-radius: 8px; }
+  .brand-title { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .brand-sub { display: none; }
+  .topbar-actions { flex-direction: row; align-items: center; gap: 8px; width: 100%; }
+  .mode-switch { flex: none; }
+  .mode-btn { padding: 11px 13px; font-size: 13px; }
+  .search-wrap { flex: 1; width: auto; }
+  .search, .search.wide { width: 100%; max-width: none; padding-top: 7px; padding-bottom: 7px; }
+
+  /* 三栏 -> 单列 */
+  .layout { flex-direction: column; height: auto; min-height: auto; }  /* v52 移动端恢复流式页面滚动 */
+
+  /* 病例列表：横向滑动卡片条 */
+  .sidebar {
+    width: 100%; overflow: visible;
+    border-right: none; border-bottom: 1px solid var(--border);
+    padding: 10px 12px 8px; gap: 6px;
+  }
+  .sidebar-title { padding: 0 2px 2px; }
+  .case-list {
+    flex-direction: row; gap: 8px;
+    overflow-x: auto; padding-bottom: 4px;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .case-list::-webkit-scrollbar { display: none; }
+  .case-list { -webkit-mask-image: linear-gradient(to right, #000 80%, transparent 98%); mask-image: linear-gradient(to right, #000 80%, transparent 98%); }
+  .case-card { flex: 0 0 auto; min-width: 168px; max-width: 76vw; padding: 8px 10px; }
+  .case-card:hover { transform: none; box-shadow: none; }
+  .sidebar-foot { display: none; }
+
+  /* 主栏：底部留出悬浮按钮的空间 */
+  .main { padding: 14px 12px 92px; }
+
+  .case-head { display: block; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); }
+  .case-head h1 { font-size: 16px; margin: 0; }
+  .case-head .chips { display: none; } /* 与侧边栏病例卡信息重复，手机端隐藏 */
+  .case-head .stat-row { display: none; }
+
+  /* tabs：横向滑动一行，「只看必要项」换行 */
+  .tabbar { gap: 8px; margin-bottom: 12px; }
+  .tabs {
+    flex: 1 1 100%; flex-wrap: nowrap;
+    overflow-x: auto; padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs { -webkit-mask-image: linear-gradient(to right, #000 88%, transparent 99%); mask-image: linear-gradient(to right, #000 88%, transparent 99%); }
+  .tab { flex: 0 0 auto; padding: 10px 13px; font-size: 13px; }
+  .tab.active { transform: none; }
+  #necOnlyWrap { margin-left: 0; }
+
+  /* 卡片内边距收紧 */
+  .group > summary, .pgroup > summary.pgroup-head, .pgroup-head { padding: 11px 12px; }
+  .group-body, .pgroup-body { padding: 8px 12px 12px; }
+  .item, .pcard, .diag { padding: 10px 11px; }
+  .pcard .p-name { padding-right: 56px; }
+  .pcard:hover, .item:hover { box-shadow: none; }
+  .pindent { padding-left: 10px; }
+
+  /* 限制进度条：数值换行显示 */
+  .limit-head { flex-wrap: wrap; gap: 2px; }
+  .limit-val { font-size: 12px; line-height: 1.5; }
+  .limit-val { flex: 1 1 100%; }
+  .limit-bar { padding: 6px 10px; }
+  .limit-note { display: none; } /* 手机端隐藏说明，颜色即语义 */
+  .limit-track { height: 10px; }
+
+  /* 诊断库行 */
+  .lib-row { gap: 8px; }
+  .lib-row .lc { width: 74px; }
+  .scene-gate { padding: 20px 14px; }
+  .scene-btn { padding: 11px 16px; font-size: 14px; }
+
+  /* ---- 右栏 -> 底部抽屉 ---- */
+  .report-col {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+    width: auto; height: 78vh; max-height: 78vh;
+    border-left: none; border-top: 1px solid var(--border-strong);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 30px rgba(16,24,40,.20);
+    padding: 10px 14px calc(24px + env(safe-area-inset-bottom));
+    transform: translateY(102%);
+    transition: transform .26s ease;
+    overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  }
+  body.rp-open .report-col { transform: translateY(0); }
+  .report-col::before {
+    content: ""; display: block; position: sticky; top: 0; z-index: 2;
+    width: 42px; height: 4px; border-radius: 999px;
+    background: var(--border-strong); margin: 0 auto 10px;
+  }
+  .rp-checkrecord { max-height: none; }
+  body.rp-open { overflow: hidden; }
+
+  /* 遮罩 */
+  #rpMask {
+    display: block; position: fixed; inset: 0; z-index: 55;
+    background: rgba(15,23,42,.38);
+    opacity: 0; pointer-events: none; transition: opacity .26s ease;
+  }
+  body.rp-open #rpMask { opacity: 1; pointer-events: auto; }
+
+  /* 悬浮开关按钮 */
+  #rpToggle {
+    display: flex; align-items: center; gap: 6px;
+    position: fixed; right: 14px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 70;
+    border: none; border-radius: 999px; padding: 12px 18px;
+    background: var(--primary); color: #fff;
+    font-size: 14px; font-weight: 700; font-family: inherit;
+    box-shadow: 0 6px 18px rgba(13,148,136,.42); cursor: pointer;
+  }
+  body.rp-open #rpToggle {
+    background: #334155; box-shadow: 0 6px 18px rgba(15,23,42,.38);
+  }
+  /* 练习模式未提交：悬浮球呼吸闪烁，提示可在此提交 */
+  #rpToggle.pulse { animation: rpHintPulse 1.7s ease-in-out infinite; }
+  @keyframes rpHintPulse {
+    0%, 100% { box-shadow: 0 6px 18px rgba(13,148,136,.42); }
+    50% { box-shadow: 0 6px 28px rgba(13,148,136,.85); }
+  }
+  /* 移动端提交位置提示条（练习模式、未提交、未关闭时显示） */
+  .rp-hint { display: none; }
+  .rp-hint.show {
+    display: flex; align-items: flex-start; gap: 8px;
+    background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+    border-radius: 10px; padding: 7px 10px; margin-bottom: 10px;
+    font-size: 12px; line-height: 1.5;
+    box-shadow: 0 2px 10px rgba(234,88,12,.12);
+  }
+  .rp-hint-ic { flex: 0 0 auto; font-size: 15px; line-height: 1.4; }
+  .rp-hint-tx { flex: 1 1 auto; font-size: 12.5px; line-height: 1.6; }
+  .rp-hint-tx b { color: #c2410c; }
+  .rp-hint-x {
+    flex: 0 0 auto; border: none; background: transparent; color: #c2410c;
+    font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px;
+    width: 36px; height: 36px;
+  }
+  .rp-hint-x:active { opacity: .6; }
+}
+
+/* --- 超小屏（≤400px）微调 --- */
+@media (max-width: 400px) {
+  body { font-size: 13.5px; }
+  .main { padding: 12px 10px 88px; }
+  .case-head h1 { font-size: 16px; }
+  .tab { padding: 11px 13px; font-size: 13px; }
+  .case-card { min-width: 150px; }
+  .group > summary, .pgroup > summary.pgroup-head, .aux-sec-head { padding: 10px; }
+  .group-body, .pgroup-body { padding: 8px 10px 10px; }
+  .report-col { height: 82vh; max-height: 82vh; }
+  #rpToggle { padding: 11px 15px; font-size: 13.5px; }
+}
+
+/* --- 超小屏（<=480px）：模式按钮与搜索框分行，避免挤压 --- */
+@media (max-width: 480px) {
+  .topbar-actions { flex-wrap: wrap; }
+  .mode-switch { width: 100%; display: flex; }
+  .mode-btn { flex: 1 1 0; }
+  .search-wrap { flex: 1 1 100%; }
+}
+
+
+/* ================= v36：辅助检查平铺长列表 ================= */
+.aux-flat { display: flex; flex-direction: column; gap: 2px; }
+.aux-sec-head {
+  /* v46：与 .pgroup-head 完全对齐（padding/gap/背景/字号/下边框） */
+  display: flex; align-items: center; gap: 10px;
+  font-weight: 700; color: var(--text);
+  padding: 11px 16px; background: #fbfdff;
+  border-bottom: 1px solid var(--border); margin-top: 8px;
+  cursor: pointer; user-select: none;
+}
+.aux-sec-head::before { content: "▸"; color: var(--muted); transition: .15s; margin-right: 2px; transform: rotate(90deg); flex: none; }
+.aux-sec-head.collapsed::before { transform: rotate(0deg); }
+.aux-row.grp-hidden { display: none; }
+.aux-flat > .aux-sec-head:first-child { border-top: none; margin-top: 0; } /* v46：首组标题与其他组完全一致（仅去顶部边框/间距） */
+.aux-sec-count { font-weight: 400; font-size: 11px; }
+.aux-sec-head .aux-sel { margin-left: auto; }
+.aux-sel {
+  border: 1px solid var(--primary); background: #fff; color: var(--primary-d);
+  border-radius: 7px; font-size: 12px; font-weight: 600;
+  padding: 4px 12px; font-family: inherit; flex: none; cursor: pointer;
+}
+.aux-sel:hover { background: #f0fdfa; }
+.aux-sel.all { background: var(--primary); color: #fff; }
+.aux-sel.all:hover { background: var(--primary-d); }
+.aux-row {
+  /* v42：基础样式继承自 .pcard 共享块（边框/圆角/padding/hover/nec/picked），此处只保留行内布局差异 */
+  display: flex; flex-direction: row; align-items: center; gap: 6px; width: 100%;
+  font-family: inherit;
+}
+.aux-row .ar-name { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.aux-row .price { flex: none; }
+.aux-row.pend, .pcard.pend { border-style: dashed; border-color: var(--primary); background: #f0fdfa; }
+.aux-row.pend .pend-ic, .pcard.pend .pend-ic { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 2px solid var(--primary); border-radius: 4px; margin-right: 6px; vertical-align: -2px; flex: none; }
+.aux-row.pend .pend-ic::after, .pcard.pend .pend-ic::after { content: ""; width: 8px; height: 8px; background: var(--primary); border-radius: 2px; }
+.aux-row .b-picked { flex: none; font-size: 12px; color: var(--green); font-weight: 600; }
+.aux-row summary { list-style: none; display: flex; align-items: center; gap: 8px; width: 100%; cursor: pointer; }
+.aux-row summary::-webkit-details-marker { display: none; }
+.aux-row .i-detail { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+@media (max-width: 860px) {
+  .aux-row { padding: 9px 10px; font-size: 14px; }
+  .aux-sec-head { padding: 11px 12px; }
+  .aux-sec-head .aux-run { padding: 6px 14px; font-size: 13px; }
+  .aux-sel { padding: 6px 14px; font-size: 13px; }
+}
+
+/* ================= v34：辅助检查多选检测 ================= */
+.aux-runbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: #f0fdfa; border: 1px dashed #99f6e4; border-radius: 10px;
+  padding: 8px 12px; margin-bottom: 10px; font-size: 13px; color: var(--teal-dark);
+}
+.aux-run {
+  border: none; cursor: pointer; border-radius: 7px;
+  background: var(--primary); color: #fff; font-weight: 700; font-size: 12px;
+  padding: 4px 12px; font-family: inherit; flex: none;
+}
+.aux-run:hover { filter: brightness(1.08); }
+@media (max-width: 480px) {
+  .aux-runbar { padding: 9px 12px; font-size: 13px; }
+  .aux-run { padding: 8px 18px; font-size: 14px; }
+}
+
+/* ================= v50：桌面左侧病例列表抽屉（≥861px，覆盖式） ================= */
+.sb-toggle { display: none; }
+.brand { margin-right: auto; }  /* v50.1 汉堡插入后保持 brand 靠左（space-between 三子项会居中偏移） */
+#sbMask { display: none; }  /* v50 全局默认隐藏（移动端无此抽屉） */
+@media (min-width: 861px) {
+  .sb-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: none; width: 36px; height: 36px; margin-right: 4px;
+    border: 1px solid var(--border-strong); background: #fff; color: var(--text);
+    border-radius: 8px; cursor: pointer; font-size: 15px; line-height: 1; font-family: inherit;
+  }
+  .sb-toggle:hover { border-color: var(--primary); }
+  .sb-toggle[aria-expanded="false"] { background: #f0fdfa; border-color: var(--primary); color: var(--primary-d); }
+  #sbMask {
+    position: fixed; inset: 0; z-index: 15; display: block;
+    background: rgba(15,23,42,.38); opacity: 0; pointer-events: none; transition: opacity .26s ease;
+  }
+  body.sb-masking #sbMask { opacity: 1; pointer-events: auto; }
+  .sidebar { transition: transform .26s ease; }
+  body.sb-open .sidebar, body.sb-collapsed .sidebar {
+    position: fixed; top: 60px; bottom: 0; left: 0; z-index: 16;
+    width: 250px; background: var(--panel);
+    border-right: 1px solid var(--border); box-shadow: 0 4px 24px rgba(16,24,40,.18);
+  }
+  body.sb-open .sidebar { transform: translateX(0); visibility: visible; }
+  body.sb-collapsed .sidebar { transform: translateX(-102%); visibility: hidden; transition: transform .26s ease, visibility 0s linear .26s; }
+  /* 收起后中间/右侧平分剩余空间（grid 1fr 1fr 严格平分，规避 flex 滚动条幽灵差） */
+  body.sb-collapsed .layout { display: grid; grid-template-columns: 1fr 1fr; }
+  body.sb-collapsed .main, body.sb-collapsed .report-col { flex: none; width: auto; min-width: 0; }
+}
+
+/* --- 触屏设备：去掉 hover 位移，避免点按时抖动 --- */
+@media (hover: none) {
+  .case-card:hover, .tab.active { transform: none; }
+  .pcard:hover, .item:hover, .case-card:hover { box-shadow: none; }
+}
+
+/* --- P3 可达性：统一焦点可见样式 + 减弱动效适配 --- */
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) {
+  #sbMask, .sidebar,
+  .case-card, .tab, .mode-btn,
+  .group > summary::before, .item[open] summary::before,
+  .diag[open] summary::before, .ev-src[open] summary::before,
+  .pgroup[open] summary.pgroup-head::before { transition: none !important; }
+}
+
+/* ================= 辅助检查价格 ================= */
+.price {
+  display: inline-flex; align-items: center;
+  font-size: 11px; font-weight: 600; color: #b45309; background: #fef3c7;
+  border-radius: 5px; padding: 1px 7px; flex: none; align-self: flex-start;
+}
+.kv.price-kv .price { font-size: 12px; }
+
+/* ================= 练习模式提交区 + 评分卡 ================= */
+.submit-area {
+  background: linear-gradient(180deg, #f0fdfa 0%, #ecfeff 100%);
+  border: 1px solid #99f6e4; border-radius: 12px;
+  padding: 14px; margin-bottom: 14px;
+}
+.btn-submit {
+  width: 100%; border: none; cursor: pointer;
+  background: var(--primary-d); color: #fff; font-weight: 700; font-size: 15px;
+  padding: 12px; border-radius: 10px; box-shadow: 0 2px 8px rgba(13,148,136,.25);
+  transition: filter .15s, transform .1s;
+}
+.btn-submit:hover { filter: brightness(1.06); }
+.btn-submit:active { transform: translateY(1px); }
+.submit-hint { margin-top: 8px; font-size: 11.5px; color: var(--muted); line-height: 1.5; text-align: center; }
+
+.submit-area.submitted { background: #fff; border-color: #e2e8f0; }
+.score-card { text-align: center; }
+.score-head { font-size: 12px; color: var(--muted); letter-spacing: 1px; }
+.score-total {
+  font-size: 46px; font-weight: 800; line-height: 1.1; color: var(--primary);
+  margin: 2px 0; font-variant-numeric: tabular-nums;
+}
+.score-unit { font-size: 15px; font-weight: 600; color: var(--muted); margin-left: 4px; }
+.score-weights { font-size: 11.5px; color: var(--muted); margin-bottom: 12px; }
+.score-break { display: flex; flex-direction: column; gap: 9px; text-align: left; }
+.sb-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; }
+.sb-name { font-size: 12.5px; font-weight: 600; color: #334155; }
+.sb-name i { font-style: normal; font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 4px; }
+.sb-val { font-size: 12.5px; font-weight: 700; color: var(--primary); font-variant-numeric: tabular-nums; }
+.sb-bar { grid-column: 1 / -1; height: 7px; background: #eef2f7; border-radius: 99px; overflow: hidden; }
+.sb-fill { display: block; height: 100%; background: linear-gradient(90deg, #2dd4bf, var(--primary)); border-radius: 99px; }
+.btn-reset-practice {
+  width: 100%; margin-top: 14px; cursor: pointer;
+  background: #fff; color: #b91c1c; border: 1px solid #fecaca;
+  font-weight: 600; font-size: 13px; padding: 9px; border-radius: 9px;
+  transition: background .15s;
+}
+.btn-reset-practice:hover { background: #fef2f2; }
