@@ -1,0 +1,189 @@
+// 评分引擎：纯函数，不读全局状态、不碰 DOM。
+// 输入 = (病例, 答卷, 规则表)，输出 = 总分 + 每个模块的覆盖/惩罚明细，
+// 因此可以在不启动网页的情况下被 node:test 直接验证。
+'use strict';
+
+import { caseItems, norm } from './case.js';
+
+export const MODULE_LABEL = { history: '病史', physical: '体格', aux: '辅助', diagnosis: '诊断', treatment: '治疗' };
+export const MODULE_ORDER = ['history', 'physical', 'aux', 'diagnosis', 'treatment'];
+const EMPTY = new Set();
+
+export const DEFAULT_RULES = {
+  // 权重沿用官网口径：治疗不计入满分门槛
+  weights: { history: 10, physical: 10, aux: 70, diagnosis: 10, treatment: 0 },
+
+  // ⚠️ 占位惩罚曲线。limits 里的 standard/reasonable/max 与 cost* 都是官网真实阈值，
+  // 但官网「超过合理线之后每超一项扣几分」的曲线并不在生成数据里。
+  // 实测到真实曲线后只改这张表（from/to/maxFraction/perItem），不要改下面的计算。
+  excess: { from: 'reasonable', to: 'max', maxFraction: 1 },
+  overdiagnosis: { perItem: 0.25, maxFraction: 1 },
+  combine: 'max',   // 同一模块的多条超额惩罚取最重的一条，避免次数与花费双重惩罚
+
+  // 证据判读（支持/不支持）先作为独立维度输出，不参与总分——官网未给出它的分值。
+  evidence: { weight: 0 },
+};
+
+export function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
+function pickedSetOf(answer, sec) { return (answer.picked && answer.picked[sec]) || EMPTY; }
+
+// 只统计确实属于本病例的键：持久化里的陈旧键不得继续影响计数或得分
+export function livePicked(caseObj, answer, sec) {
+  const known = new Set(caseItems(caseObj.sections, sec).map(i => i.key));
+  return [...pickedSetOf(answer, sec)].filter(k => known.has(k));
+}
+
+// 覆盖率先保持既有口径：分母为该板块全部条目的分值之和
+// （生成数据里非必要项 score=0，因此分母实际等于必要项分值；schema 校验会盯住这个前提）
+export function moduleCoverage(caseObj, answer, sec) {
+  const items = caseItems(caseObj.sections, sec);
+  const picked = pickedSetOf(answer, sec);
+  let denom = 0, numer = 0;
+  for (const it of items) {
+    denom += it.score;
+    if (picked.has(it.key) && it.nec) numer += it.score;
+  }
+  return denom ? numer / denom : 1;
+}
+
+export function limitMetrics(caseObj, answer, sec) {
+  const L = (caseObj.limits || {})[sec];
+  if (!L) return [];
+  const out = [];
+  if (sec === 'aux') {
+    out.push({ metric: 'count', label: '检查次数', value: answer.auxCheckCount || 0, lim: L });
+    const cost = caseItems(caseObj.sections, 'aux')
+      .filter(i => pickedSetOf(answer, 'aux').has(i.key))
+      .reduce((a, i) => a + i.cost, 0);
+    out.push({ metric: 'cost', label: '花费', value: cost, lim: { standard: L.costStandard, reasonable: L.costReasonable, max: L.costMax } });
+  } else {
+    out.push({ metric: 'count', label: sec === 'history' ? '提问数' : sec === 'physical' ? '检查项目数' : '措施数', value: livePicked(caseObj, answer, sec).length, lim: L });
+  }
+  return out.filter(m => m.lim && m.lim.max);
+}
+
+// 超额惩罚：≤ 合理线不扣，合理线→上限之间线性加重，到上限扣满 maxFraction
+export function excessFraction(value, lim, rules) {
+  const r = rules.excess;
+  const from = lim[r.from] == null ? lim[r.to] : lim[r.from];
+  const to = lim[r.to];
+  if (!to || value <= from) return 0;
+  if (to <= from) return r.maxFraction;
+  return clamp01((value - from) / (to - from)) * r.maxFraction;
+}
+
+export function limitPenalties(caseObj, answer, sec, rules) {
+  return limitMetrics(caseObj, answer, sec).map(m => ({
+    sec, metric: m.metric, label: m.label, value: m.value,
+    from: m.lim.reasonable == null ? m.lim.max : m.lim.reasonable, to: m.lim.max,
+    fraction: excessFraction(m.value, m.lim, rules),
+  })).filter(p => p.fraction > 0);
+}
+
+const synonymsOf = a => (a.synonyms || '').split(/[，,、]/).map(norm).filter(Boolean);
+
+export function diagnosisAssessment(caseObj, answer, rules) {
+  const answers = caseObj.sections.diagnosis || [];
+  const clsMap = answer.diagClass || {};
+  const selected = Object.keys(answer.diagMarks || {});
+  const findByUser = un => answers.find(a => norm(un) === norm(a.name) || synonymsOf(a).includes(norm(un)));
+  const findUser = a => selected.find(un => norm(un) === norm(a.name) || synonymsOf(a).includes(norm(un)));
+
+  const totalScore = answers.reduce((s, a) => s + (a.score || 1), 0);
+  let hitScore = 0;
+  const matched = [];
+  for (const a of answers) {
+    const un = findUser(a);
+    if (!un) continue;
+    matched.push({ user: un, answer: a.name });
+    if (norm(clsMap[un] || '未分类') === norm(a.cls || '未分类')) hitScore += a.score || 1;
+  }
+  const coverage = totalScore ? hitScore / totalScore : 1;
+  const invalid = selected.filter(un => !findByUser(un));
+  const unclassified = selected.filter(un => !clsMap[un]);
+  return {
+    coverage,
+    invalid,
+    unclassified,
+    matched,
+    fraction: Math.min(rules.overdiagnosis.maxFraction, invalid.length * rules.overdiagnosis.perItem),
+  };
+}
+
+// 独立维度：证据「支持/不支持」判读。官网未给这一维分值，故只输出、不计入总分。
+export function evidenceReview(caseObj, answer) {
+  const answers = caseObj.sections.diagnosis || [];
+  const findByUser = un => answers.find(a => norm(un) === norm(a.name) || synonymsOf(a).includes(norm(un)));
+  let marked = 0, correct = 0;
+  for (const name of Object.keys(answer.diagMarks || {})) {
+    const a = findByUser(name);
+    if (!a || !a.bySrc) continue;
+    const m = answer.diagMarks[name] || {};
+    const sup = m.support instanceof Set ? m.support : new Set(m.support || []);
+    const uns = m.unsupport instanceof Set ? m.unsupport : new Set(m.unsupport || []);
+    for (const src of Object.keys(a.bySrc)) {
+      for (const u of a.bySrc[src]) {
+        const k = norm(u.text);
+        const s = sup.has(k), t = uns.has(k);
+        if (!s && !t) continue;
+        marked++;
+        if ((u.support && s) || (!u.support && t)) correct++;
+      }
+    }
+  }
+  return { marked, correct, accuracy: marked ? correct / marked : null };
+}
+
+export function computeScore(caseObj, answer, rules) {
+  const R = rules || DEFAULT_RULES;
+  const diag = diagnosisAssessment(caseObj, answer, R);
+  const breakdown = [];
+  const penalties = [];
+
+  for (const sec of MODULE_ORDER) {
+    const weightPct = R.weights[sec] == null ? 0 : R.weights[sec];
+    let coverage, pens;
+    if (sec === 'diagnosis') {
+      coverage = diag.coverage;
+      pens = diag.fraction > 0
+        ? [{ sec, metric: 'overdiagnosis', label: '过度诊断', value: diag.invalid.length, from: 0, to: null, fraction: diag.fraction }]
+        : [];
+    } else {
+      coverage = moduleCoverage(caseObj, answer, sec);
+      pens = limitPenalties(caseObj, answer, sec, R);
+    }
+    const frac = R.combine === 'max'
+      ? pens.reduce((a, p) => Math.max(a, p.fraction), 0)
+      : clamp01(pens.reduce((a, p) => a + p.fraction, 0));
+    const rate = clamp01(coverage * (1 - frac));
+    for (const p of pens) {
+      p.points = -(weightPct * coverage * p.fraction);
+      penalties.push(p);
+    }
+    breakdown.push({
+      key: sec,
+      label: MODULE_LABEL[sec],
+      weight: weightPct + '%',
+      weightPct,
+      coverage,
+      penalty: frac,
+      rate,
+      points: weightPct * rate,
+      lost: weightPct * coverage - weightPct * rate,
+      penalties: pens,
+    });
+  }
+
+  const total = breakdown.reduce((s, b) => s + b.points, 0);
+  return {
+    total,
+    breakdown,
+    penalties,
+    notes: {
+      unclassifiedDiagnoses: diag.unclassified,
+      invalidDiagnoses: diag.invalid,
+      evidence: evidenceReview(caseObj, answer),
+    },
+  };
+}
