@@ -3,11 +3,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
+const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const http = require('node:http');
 
 const SITE = path.join(__dirname, '..', 'site');
-const { resolveRequest, ROOT } = require(path.join(SITE, 'serve.js'));
+const { resolveRequest, ROOT, CSP } = require(path.join(SITE, 'serve.js'));
 
 // 旧实现的路径判定，保留在此用于证明这些断言确实能抓到当年的缺陷（falsification 基线）。
 // 缺陷：把「字符串前缀」当成了「目录边界」。
@@ -121,6 +122,83 @@ test('真实请求：非法编码返回 400，进程仍存活并能继续服务'
     assert.strictEqual(ok.status, 200);
     assert.strictEqual(ok.headers['x-content-type-options'], 'nosniff');
     assert.deepStrictEqual(exits, [], '服务进程不应因非法请求退出');
+  } finally {
+    child.kill();
+  }
+});
+
+// —— CSP ——
+// 内联脚本扫描器：CSP 关掉 script-src 'unsafe-inline' 之后，页面里任何行内脚本都会静默失效
+// （按钮照样在、照样能点，只是那段代码不跑了），所以要在发布前用源码扫一遍。
+function findInlineCode(html) {
+  const hits = [];
+  const tag = /<script\b([^>]*)>/gi;
+  let m;
+  while ((m = tag.exec(html))) {
+    if (!/\bsrc\s*=/i.test(m[1])) hits.push('行内 <script>' + m[1].slice(0, 40));
+  }
+  const attr = /\son[a-z]+\s*=\s*["']/gi;
+  while ((m = attr.exec(html))) hits.push('行内事件属性 ' + m[0].trim());
+  const jsUrl = /href\s*=\s*["']javascript:/gi;
+  while ((m = jsUrl.exec(html))) hits.push('javascript: 链接');
+  return hits;
+}
+
+test('CSP 扫描器自身能认出三种内联写法（否则这条闸是永真绿）', () => {
+  const bad = '<script>doThing()</script><button onclick="go()">x</button><a href="javascript:void(0)">y</a>';
+  const hits = findInlineCode(bad);
+  assert.strictEqual(hits.length, 3, '应当各命中一条，实到 ' + JSON.stringify(hits));
+  // 合法写法不得误报：外链 module、JS 里赋的处理器、行内 style
+  const good = '<script type="module" src="assets/app.js?v=55"></script><div style="width:50%"></div>';
+  assert.deepStrictEqual(findInlineCode(good), []);
+  // JS 里给属性赋处理器不是内联事件；写成 assert.ok(数组) 会因 [] 恒真而永远绿
+  assert.deepStrictEqual(findInlineCode('btn.onclick = fn;'), []);
+});
+
+test('站内每个 HTML 与前端源码都没有内联脚本（script-src self 才不会打断页面）', () => {
+  const files = fs.readdirSync(SITE).filter(f => f.endsWith('.html')).map(f => path.join(SITE, f));
+  files.push(path.join(SITE, 'assets', 'app.js'));
+  const bad = [];
+  for (const f of files) {
+    for (const h of findInlineCode(fs.readFileSync(f, 'utf8'))) bad.push(path.basename(f) + ': ' + h);
+  }
+  assert.deepStrictEqual(bad, [], '这些地方会被 CSP 拦掉：\n  ' + bad.join('\n  '));
+});
+
+test('CSP 本身不含 script-src 的放行口子，但保留行内 style（进度条要用）', () => {
+  const directives = Object.fromEntries(CSP.split(';').map(s => {
+    const t = s.trim(); const i = t.indexOf(' ');
+    return [t.slice(0, i), t.slice(i + 1).trim()];
+  }));
+  assert.strictEqual(directives['default-src'], "'self'");
+  assert.strictEqual(directives['script-src'], "'self'", 'script-src 一旦带上 unsafe-inline，这条闸就该红');
+  assert.ok(directives['style-src'].includes("'unsafe-inline'"), '行内 style 属性被拦会让评分条变成 0 宽');
+  assert.strictEqual(directives['object-src'], "'none'");
+  assert.strictEqual(directives['frame-ancestors'], "'none'");
+});
+
+test('真实请求：成功与失败的响应都带 CSP 头', async () => {
+  const port = 19100 + (process.pid % 300);
+  const child = spawn(process.execPath, [path.join(SITE, 'serve.js')], {
+    env: Object.assign({}, process.env, { PORT: String(port), HOST: '127.0.0.1' }),
+    stdio: 'ignore',
+  });
+  try {
+    for (let i = 0; i < 60; i++) {
+      try { await get(port, '/index.html'); break; }
+      catch (e) { await new Promise(r => setTimeout(r, 100)); }
+    }
+    const probes = [['/index.html', 200], ['/%ff%fe', 400], ['/..%2f..%2fREADME.md', 403], ['/nope.json', 404]];
+    for (const [u, want] of probes) {
+      const r = await get(port, u);
+      assert.strictEqual(r.status, want, u + ' 状态码');
+      assert.strictEqual(r.headers['content-security-policy'], CSP, u + ' 缺 CSP 头');
+    }
+    // 规则表与病例数据必须同源可读：connect-src 'self' 之下 fetch 才不会被拦
+    const rules = await get(port, '/rules/official-rule.json');
+    assert.strictEqual(rules.status, 200, 'site/rules/official-rule.json 应当被服务出去');
+    assert.strictEqual(rules.headers['content-type'], 'application/json; charset=utf-8');
+    assert.doesNotThrow(() => JSON.parse(rules.body));
   } finally {
     child.kill();
   }

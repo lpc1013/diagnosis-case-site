@@ -44,8 +44,27 @@ function resolveRequest(rawUrl) {
   return { fp };
 }
 
+// 只服务本站资源。style-src 里的 'unsafe-inline' 是给行内 style 属性的
+// （评分条用 style="width:N%" 画进度），不是给行内 <script> 留的口子——
+// script-src 没有 unsafe-inline，tests/serve.test.js 会钉住页面确实一个行内脚本都没有。
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
 function send(res, status, body, headers) {
-  res.writeHead(status, Object.assign({ 'X-Content-Type-Options': 'nosniff' }, headers));
+  res.writeHead(status, Object.assign({
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': CSP,
+  }, headers));
   res.end(body);
 }
 
@@ -89,7 +108,7 @@ server.on('clientError', (err, socket) => {
 });
 
 // 被 require 时（回归测试）只导出解析函数，不占端口；直接运行时才监听。
-module.exports = { resolveRequest, ROOT, MIME };
+module.exports = { resolveRequest, ROOT, MIME, CSP };
 
 if (require.main === module) {
   if (!/^(127\.0\.0\.1|localhost|::1)$/.test(HOST)) {
