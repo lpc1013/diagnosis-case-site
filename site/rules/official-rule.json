@@ -1,0 +1,30 @@
+{
+  "ruleVersion": "0.2.0",
+  "status": "placeholder-curve",
+  "weights": {
+    "history": 10,
+    "physical": 10,
+    "aux": 70,
+    "diagnosis": 10,
+    "treatment": 0
+  },
+  "excess": {
+    "from": "reasonable",
+    "to": "max",
+    "maxFraction": 1
+  },
+  "overdiagnosis": {
+    "perItem": 0.25,
+    "maxFraction": 1
+  },
+  "combine": "max",
+  "evidence": {
+    "weight": 0
+  },
+  "notes": {
+    "真实的部分": "weights 沿用官网口径；limits 里的 standard/reasonable/max 与 costStandard/costReasonable/costMax 是官网阈值，随病例存在 data/cases.json，不在本表重复。",
+    "占位的部分": "excess 与 overdiagnosis 是曲线形状。官网没有给出「超过合理线后每超一项扣几分」，因此这张表的两条曲线是假设值，实测到真实曲线后只改本文件，不改 domain/scoring.js 的计算。",
+    "阈值为何不在这里": "阈值逐病例不同，由再生脚本从官网数据带出。写两处必然漂移，所以规则表只放与病例无关的曲线形状。",
+    "combine": "max 表示同一模块的多条超额惩罚取最重一条（次数与花费不叠加）；改成 sum 则按累加。"
+  }
+}

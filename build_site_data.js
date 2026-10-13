@@ -25,6 +25,11 @@ const CASE_FILES = ['呕血068', '记忆力定向力减退、走路不稳', '双
 // 前端契约与病例配对只保留一份实现，构建期就地自检
 const { validateCases } = require('./site/assets/js/data/schema.js');
 const { matchRawFiles } = require('./site/assets/js/data/case-registry.js');
+const { caseVersionOf, caseItems } = require('./site/assets/js/domain/case.js');
+
+// 计分必要项计数：与前端 caseItems 同一份扁平化实现，避免这里再写一套 walk
+const necCount = c => ['history', 'physical', 'aux', 'diagnosis', 'treatment']
+  .reduce((a, sec) => a + caseItems(c.sections, sec).filter(i => i.nec).length, 0);
 
 const RAW_DIR = path.join(SRC, '_源数据');
 
@@ -685,12 +690,16 @@ CASE_FILES.forEach((name, idx) => {
   })();
   const increments = deriveIncrements(raw, cor, opt, idx, sections, liveIncr);
 
-  cases.push({
+  // caseVersion 必须在对象成型后再算：摘要只覆盖影响计分的字段（条目键/必要性/分值/费用/阈值）
+  const built = {
     idx, name: meta.name || name, dept: meta.dept || '', patient: meta.patient || '',
     gender: meta.gender || '', age: meta.age || '', sections, reports, increments, limits,
     // 每个模块的数据来自哪一份原始导出，留痕以便事后核对
     src: { file: rawFile, id: String(meta._id || meta.id || ''), pairedBy: 'meta.name' },
-  });
+    caseVersion: null,
+  };
+  built.caseVersion = caseVersionOf(built);
+  cases.push(built);
 });
 
 // 写出前用前端同一份契约自检：结构不合格就中止，绝不带着错数据发布
@@ -709,6 +718,8 @@ if (errors.length) {
 }
 
 fs.writeFileSync(path.join(OUT, 'cases.json'), JSON.stringify(cases, null, 1), 'utf8');
+console.log(`cases.json 已写出 ${cases.length} 例，各例计分版本：`);
+cases.forEach(c => console.log(`  #${c.idx} ${c.name} · ${c.caseVersion} · 必要项 ${necCount(c)}`));
 
 // 诊断库
 const dc = JSON.parse(fs.readFileSync(path.join(ROOT, 'diag_cache.json'), 'utf8'));

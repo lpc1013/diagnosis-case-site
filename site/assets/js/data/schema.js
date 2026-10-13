@@ -61,6 +61,60 @@ export function validateCases(cases) {
   return out;
 }
 
+// ---------- 规则表契约 ----------
+// 规则表写错不会崩溃，只会静默地按另一套曲线打分，所以这里的判据一律偏严：
+// 未知键、写歪的字段名、越界的系数都算 error，让整站拒绝启动而不是"大概差不多"。
+const RULE_FIELDS = ['ruleVersion', 'status', 'weights', 'excess', 'overdiagnosis', 'combine', 'evidence', 'notes'];
+const LIM_KEYS = ['standard', 'reasonable', 'max'];
+const COMBINES = ['max', 'sum'];
+
+function isFraction(x) { return Number.isFinite(x) && x >= 0 && x <= 1; }
+
+export function validateRules(raw) {
+  const out = [];
+  const at = 'official-rule.json';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [problem('error', 'NOT_OBJECT', `${at} 顶层不是对象`)];
+  for (const k of Object.keys(raw)) {
+    if (!RULE_FIELDS.includes(k)) out.push(problem('error', 'UNKNOWN_FIELD', `${at} 不认识的字段「${k}」——拼错的规则字段会被静默忽略，故视为错误`));
+  }
+  if (typeof raw.ruleVersion !== 'string' || !raw.ruleVersion.trim()) {
+    out.push(problem('error', 'NO_RULE_VERSION', `${at} 缺少非空 ruleVersion（成绩单要靠它说明当时用的是哪版规则）`));
+  }
+  const w = raw.weights;
+  if (!w || typeof w !== 'object') out.push(problem('error', 'NO_WEIGHTS', `${at} 缺少 weights`));
+  else {
+    let sum = 0;
+    for (const k of Object.keys(w)) {
+      if (!SECTIONS.includes(k)) { out.push(problem('error', 'UNKNOWN_SECTION', `${at} weights 里有未知板块「${k}」`)); continue; }
+      if (!Number.isFinite(w[k]) || w[k] < 0) out.push(problem('error', 'BAD_WEIGHT', `${at} weights.${k} 必须是非负数字（${w[k]}）`));
+      else sum += w[k];
+    }
+    for (const k of SECTIONS) if (w[k] == null) out.push(problem('warn', 'WEIGHT_DEFAULTED', `${at} weights 未给 ${k}，按 0 兜底`));
+    if (Number.isFinite(sum) && Math.abs(sum - 100) > 1e-9) out.push(problem('error', 'WEIGHT_SUM', `${at} weights 之和为 ${sum}，百分制要求正好 100`));
+  }
+  const ex = raw.excess;
+  if (!ex || typeof ex !== 'object') out.push(problem('error', 'NO_EXCESS', `${at} 缺少 excess`));
+  else {
+    for (const f of ['from', 'to']) {
+      if (!LIM_KEYS.includes(ex[f])) out.push(problem('error', 'BAD_LIM_KEY', `excess.${f} 必须是 ${LIM_KEYS.join('/')} 之一（当前 ${JSON.stringify(ex[f])}）`));
+    }
+    if (!isFraction(ex.maxFraction)) out.push(problem('error', 'BAD_FRACTION', `excess.maxFraction 必须在 0~1（当前 ${ex.maxFraction}）`));
+  }
+  const od = raw.overdiagnosis;
+  if (!od || typeof od !== 'object') out.push(problem('error', 'NO_OVERDIAGNOSIS', `${at} 缺少 overdiagnosis`));
+  else {
+    if (!Number.isFinite(od.perItem) || od.perItem < 0) out.push(problem('error', 'BAD_PER_ITEM', `overdiagnosis.perItem 必须是非负数字（当前 ${od.perItem}）`));
+    if (!isFraction(od.maxFraction)) out.push(problem('error', 'BAD_FRACTION', `overdiagnosis.maxFraction 必须在 0~1（当前 ${od.maxFraction}）`));
+  }
+  if (raw.combine != null && !COMBINES.includes(raw.combine)) {
+    out.push(problem('error', 'BAD_COMBINE', `${at} combine 只能是 ${COMBINES.join('/')}（当前 ${JSON.stringify(raw.combine)}）`));
+  }
+  if (raw.evidence && raw.evidence.weight != null && raw.evidence.weight !== 0) {
+    out.push(problem('error', 'EVIDENCE_UNIMPLEMENTED', `${at} evidence.weight=${raw.evidence.weight}，但引擎还没有把证据计入总分的实现；先写 0，别让它假装生效`));
+  }
+  return out;
+}
+
 // 把一个 fetch/解析失败归成可操作的类别
 export function classifyLoadError(err, url) {
   const kind = err && err.__loadKind;

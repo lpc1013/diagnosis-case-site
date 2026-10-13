@@ -106,3 +106,23 @@ export function countTotal(sections, sec) { return caseItems(sections, sec).leng
 export function necKeys(sections, sec) {
   return caseItems(sections, sec).filter(i => i.nec).map(i => i.key);
 }
+
+// FNV-1a：只用四则与位运算，因此同一份实现在浏览器、构建脚本（CJS）与测试里逐字节一致。
+export function digest(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, '0');
+}
+
+// 病例版本 = 影响计分的那部分内容的摘要，而不是手写计数器。
+// 手写的 "v1.4" 一旦被忘记递增就是假凭证；摘要改一个分值就变，无需人记得。
+const VERSION_SECTIONS = ['history', 'physical', 'aux', 'diagnosis', 'treatment'];
+export function caseVersionOf(c) {
+  if (!c || !c.sections) return null;
+  const parts = VERSION_SECTIONS.map(sec =>
+    sec + ':' + caseItems(c.sections, sec)
+      .map(i => `${i.key},${i.nec ? 1 : 0},${i.score},${sec === 'aux' ? i.cost : ''}`)
+      .join(';'));
+  parts.push('lim:' + JSON.stringify(c.limits || {}));
+  return 'c' + digest(parts.join('|'));
+}

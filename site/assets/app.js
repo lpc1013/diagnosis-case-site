@@ -2,9 +2,9 @@
 
 import { norm, keyOf, caseItems, countNec, countTotal, necKeys, auxTopLevel, historyPath, safeCost } from './js/domain/case.js';
 import { caseAnswer } from './js/domain/answer.js';
-import { computeScore as domainComputeScore, DEFAULT_RULES, limitMetrics, excessFraction, MODULE_LABEL } from './js/domain/scoring.js';
+import { computeScore as domainComputeScore, DEFAULT_RULES, BUILTIN_RULES_VERSION, normalizeRules, rulesDigest, formatWeights, limitMetrics, excessFraction, MODULE_LABEL } from './js/domain/scoring.js';
 import { replayPicked, replayAll, CR_SECTIONS } from './js/domain/history-replay.js';
-import { loadJson, validateCases, LOAD_ERROR, LOAD_HELP } from './js/data/schema.js';
+import { loadJson, validateCases, validateRules, LOAD_ERROR, LOAD_HELP } from './js/data/schema.js';
 import { loadFrom, saveTo, emptyApp } from './js/data/persistence.js';
 
 const SECTIONS = [
@@ -35,9 +35,12 @@ const state = {
   auxExpanded: {},           // auxExpanded[caseIdx] = Set(grpKey) 辅助组展开集合（v48 默认全折叠，点开才展开）
   auxCheckCount: {},          // auxCheckCount[caseIdx] = 检测动作次数（进度条口径=检查次数，v44）
   sbOpen: true,               // v50 桌面左侧病例抽屉：默认展开，会话内状态（不持久化）
-  scores: {},                // scores[caseIdx] = { total, breakdown, penalties, ts }
+  scores: {},                // scores[caseIdx] = { total, breakdown, penalties, ts, versions }
   hintDismissed: false,      // 移动端「提交位置」提示条是否已关闭
   storageNotice: '',         // 本地进度迁移/丢弃说明（会话内展示一次）
+  rules: DEFAULT_RULES,      // 生效的规则表（启动时从 site/rules/official-rule.json 读入）
+  ruleSource: BUILTIN_RULES_VERSION,  // 规则来源标签，评分卡必须自报跑的是哪一套
+  ruleDefaulted: [],         // 规则文件里没写、由内置默认补上的字段（评分卡要点名）
 };
 
 // ---------- 本地持久化（练习进度 + 评分，刷新不丢）----------
@@ -739,7 +742,8 @@ function limitBarHTML(label, val, lim, isCost, unit) {
   const color = val <= std ? 'green' : (val <= reaV ? 'orange' : 'red');
   const u = isCost ? '' : (unit || ' 项');
   const remain = Math.max(0, Math.ceil(std - val));
-  const penFrac = color === 'red' ? excessFraction(val, lim, DEFAULT_RULES) : 0;
+  // 进度条上的「按 X% 计分」必须与评分用同一张规则表，否则承诺和扣法会漂开
+  const penFrac = color === 'red' ? excessFraction(val, lim, state.rules) : 0;
   const note = color === 'green'
     ? (remain > 0 ? `还差 ${fmtNum(remain)}${u} 到标准线 ${fmtNum(std)}（绿色达标区）` : `已达标；超过 ${fmtNum(reaV)}${u} 开始扣分`)
     : (color === 'orange'
@@ -977,7 +981,39 @@ function formatCheckRecord(rec) {
 // 计算全部在 js/domain/scoring.js：这里只负责把「当前病例 + 当前答卷 + 规则表」递进去，
 // 因此同一份评分逻辑可以在不启动网页的情况下被 node:test 验证。
 function computeScore() {
-  return domainComputeScore(getCase(), answerView(), DEFAULT_RULES);
+  return domainComputeScore(getCase(), answerView(), state.rules);
+}
+
+// 成绩单必须说得出自己是「哪版病例 + 哪版规则」算出来的：
+// 病例再生或规则改数之后，旧成绩不能再假装是当前标准下的结果。
+function scoreStamp() {
+  return {
+    caseVersion: getCase().caseVersion || null,
+    ruleVersion: state.rules.ruleVersion,
+    rulesDigest: rulesDigest(state.rules),
+  };
+}
+
+// 规则来源标签：学生有权知道自己被的那把尺子刻度是不是临时的。
+function ruleSourceLabel() {
+  const r = state.rules;
+  const parts = [`规则 ${r.ruleVersion}`];
+  if (r.status === 'placeholder-curve') parts.push('扣分曲线为占位值');
+  parts.push(`病例 ${getCase().caseVersion || '未记录'}`);
+  if (state.ruleSource && state.ruleSource !== r.ruleVersion) parts.push(`来源 ${state.ruleSource}`);
+  if (state.ruleDefaulted && state.ruleDefaulted.length) parts.push(`${state.ruleDefaulted.length} 项字段来自内置兜底`);
+  return parts.join(' · ');
+}
+
+function versionNote(sc) {
+  if (!sc.versions) return '<div class="rp-note">此成绩单提交于版本记录之前，无法确认当时的病例与规则版本。</div>';
+  const bad = [];
+  if (sc.versions.caseVersion !== (getCase().caseVersion || null)) bad.push('病例数据已再生（计分内容变了）');
+  if (sc.versions.rulesDigest !== rulesDigest(state.rules)) bad.push(`规则已从 ${sc.versions.ruleVersion || '?'} 改为 ${state.rules.ruleVersion}`);
+  if (!bad.length) return `<div class="sp-ver">${esc(ruleSourceLabel())}</div>`;
+  return `<div class="rp-note" role="alert">这份成绩是当时标准下的结果：${esc(bad.join('；'))}。` +
+    `提交时为规则 ${esc(sc.versions.ruleVersion || '?')} / 病例 ${esc(sc.versions.caseVersion || '未记录')}。` +
+    `点「重新练习本病例」在当前标准下重做。</div>`;
 }
 
 // ================= 提交区 + 评分卡 =================
@@ -1025,10 +1061,11 @@ function renderSubmitArea() {
       <div class="score-card">
         <div class="score-head">本病例评分</div>
         <div class="score-total">${sc.total.toFixed(1)}<span class="score-unit">分 / 100</span></div>
-        <div class="score-weights">权重：病史10% · 体格10% · 辅助70% · 诊断10% · 治疗0%</div>
+        <div class="score-weights">权重：${esc(formatWeights(state.rules))}</div>
         <div class="score-break">${rows}</div>
         ${penaltyLines(sc.penalties)}
         ${noteLines(sc.notes)}
+        ${versionNote(sc)}
       </div>
       <button class="btn-reset-practice" data-reset="${cur}">重新练习本病例</button>
     </div>`;
@@ -1042,6 +1079,7 @@ function renderSubmitArea() {
       <div class="sp-head">当前预估</div>
       <div class="sp-total">${live.total.toFixed(1)}<span class="score-unit">分</span></div>
       <div class="sp-note">按已采集项实时计算，含超额扣分；提交后锁定并计入历史。</div>
+      <div class="sp-ver">${esc(ruleSourceLabel())}</div>
       ${livePens}
     </div>
     <button class="btn-submit" id="btnSubmit" data-cur="${cur}">提交本病例答卷</button>
@@ -1345,7 +1383,7 @@ function bindSectionClicks() {
       const warn = r.notes.unclassifiedDiagnoses.length
         ? `\n注意：${r.notes.unclassifiedDiagnoses.length} 个诊断尚未分类，将按「未分类」计分。`
         : '';
-      if (confirm('确定提交本病例答卷？\n提交后将按权重计算百分制评分（病史10% · 体格10% · 辅助70% · 诊断10% · 治疗0%），并锁定答卷——提交后再点选不会改变状态或评分，需「重新练习」才能修改。' + pen + warn)) {
+      if (confirm('确定提交本病例答卷？\n提交后将按权重计算百分制评分（' + formatWeights(state.rules) + '），并锁定答卷——提交后再点选不会改变状态或评分，需「重新练习」才能修改。' + pen + warn)) {
         state.scores = state.scores || {};
         state.scores[state.cur] = {
           total: r.total,
@@ -1353,6 +1391,7 @@ function bindSectionClicks() {
           penalties: r.penalties,
           notes: r.notes,
           ts: Date.now(),
+          versions: scoreStamp(),
         };
         saveState();
         renderSection();   // 锁定横幅要立刻出现在练习区
@@ -1413,9 +1452,25 @@ function loadErrorHTML(err) {
   return `<div class="empty load-error">
     <div class="le-kind">[${esc(kind)}]</div>
     <div class="le-msg">${esc(err && err.message ? err.message : String(err))}</div>
-    <div class="le-help">${esc(LOAD_HELP[kind] || '')}</div>
+    <div class="le-help">${esc((err && err.__help) || LOAD_HELP[kind] || '')}</div>
     ${problems ? `<ul class="le-list">${problems}</ul>` : ''}
   </div>`;
+}
+
+// 规则表：文件不存在 → 按内置兜底打分并在评分卡写明；文件存在但不合格 → 整站拒绝启动。
+// 后一种情况绝不静默退回兜底曲线，否则页面照常渲染、照常出分，只是按另一套标准给分。
+async function loadRules() {
+  try {
+    const raw = await loadJson('rules/official-rule.json', { validator: validateRules });
+    const { rules, fromBuiltin } = normalizeRules(raw);
+    return { rules, source: rules.ruleVersion, defaulted: fromBuiltin };
+  } catch (e) {
+    if (e.__loadKind === LOAD_ERROR.FILE_NOT_FOUND) {
+      return { rules: DEFAULT_RULES, source: BUILTIN_RULES_VERSION, defaulted: [], missing: true };
+    }
+    e.__help = '评分规则表本身有问题。页面不会因此改用内置曲线偷偷打分——请修正 site/rules/official-rule.json 后刷新。';
+    throw e;
+  }
 }
 
 function startApp() {
@@ -1441,11 +1496,12 @@ async function boot() {
   const el = document.getElementById('section');
   el.innerHTML = '<div class="empty">正在载入病例数据…</div>';
   try {
-    const [cases, diaglib] = await Promise.all([
+    const [cases, diaglib, rulesInfo] = await Promise.all([
       loadJson('data/cases.json', { validator: validateCases }),
       loadJson('data/diaglib.json', {
         validator: d => (Array.isArray(d) ? [] : [{ level: 'error', code: 'NOT_ARRAY', msg: 'diaglib.json 顶层不是数组' }]),
       }),
+      loadRules(),
     ]);
     let histRec = {};
     try {
@@ -1455,6 +1511,7 @@ async function boot() {
       histRec = {};
     }
     state.cases = cases; state.diaglib = diaglib; state.histRec = histRec || {};
+    state.rules = rulesInfo.rules; state.ruleSource = rulesInfo.source; state.ruleDefaulted = rulesInfo.defaulted;
     loadState();
     startApp();
     if (state.storageNotice) {

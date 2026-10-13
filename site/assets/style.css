@@ -873,3 +873,7 @@ body {
   .aux-sec-head::before { transition: none; }
   #rpToggle.pulse { animation: none; }
 }
+
+/* v55 规则外置与版本绑定 */
+.sp-ver { margin-top: 6px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.score-card .sp-ver { text-align: center; }

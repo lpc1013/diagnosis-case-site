@@ -3,19 +3,24 @@
 // 因此可以在不启动网页的情况下被 node:test 直接验证。
 'use strict';
 
-import { caseItems, norm } from './case.js';
+import { caseItems, digest, norm } from './case.js';
 
 export const MODULE_LABEL = { history: '病史', physical: '体格', aux: '辅助', diagnosis: '诊断', treatment: '治疗' };
 export const MODULE_ORDER = ['history', 'physical', 'aux', 'diagnosis', 'treatment'];
 const EMPTY = new Set();
 
+// 内置兜底表：仅在 site/rules/official-rule.json 缺失时使用（结构缺失 ≠ 内容不合法，
+// 后者必须拒绝启动，见 normalizeRules 与 README）。数值必须与规则文件逐项一致。
+export const BUILTIN_RULES_VERSION = 'builtin-0.2.0';
 export const DEFAULT_RULES = {
+  ruleVersion: BUILTIN_RULES_VERSION,
+  status: 'placeholder-curve',
   // 权重沿用官网口径：治疗不计入满分门槛
   weights: { history: 10, physical: 10, aux: 70, diagnosis: 10, treatment: 0 },
 
   // ⚠️ 占位惩罚曲线。limits 里的 standard/reasonable/max 与 cost* 都是官网真实阈值，
   // 但官网「超过合理线之后每超一项扣几分」的曲线并不在生成数据里。
-  // 实测到真实曲线后只改这张表（from/to/maxFraction/perItem），不要改下面的计算。
+  // 实测到真实曲线后改的是 site/rules/official-rule.json，不要改这张表，更不要改下面的计算。
   excess: { from: 'reasonable', to: 'max', maxFraction: 1 },
   overdiagnosis: { perItem: 0.25, maxFraction: 1 },
   combine: 'max',   // 同一模块的多条超额惩罚取最重的一条，避免次数与花费双重惩罚
@@ -23,6 +28,53 @@ export const DEFAULT_RULES = {
   // 证据判读（支持/不支持）先作为独立维度输出，不参与总分——官网未给出它的分值。
   evidence: { weight: 0 },
 };
+
+// 规则表外置后的形状补齐：文件可以只写它想覆盖的字段，其余落回内置默认，
+// 并把「哪些字段其实来自兜底」原样报告出去——评分卡要能说明自己跑的是哪套数。
+export function normalizeRules(raw) {
+  const fromBuiltin = [];
+  const base = DEFAULT_RULES;
+  const src = raw || {};
+  const pick = (sec, def) => {
+    const v = src[sec] == null ? {} : src[sec];
+    const out = {};
+    for (const k of Object.keys(def)) {
+      if (v[k] == null) { out[k] = def[k]; fromBuiltin.push(`${sec}.${k}`); }
+      else out[k] = v[k];
+    }
+    return out;
+  };
+  const scalar = (key, def) => {
+    if (src[key] == null) { fromBuiltin.push(key); return def; }
+    return src[key];
+  };
+  return {
+    rules: {
+      ruleVersion: src.ruleVersion == null ? base.ruleVersion : src.ruleVersion,
+      status: src.status == null ? base.status : src.status,
+      weights: pick('weights', base.weights),
+      excess: pick('excess', base.excess),
+      overdiagnosis: pick('overdiagnosis', base.overdiagnosis),
+      combine: scalar('combine', base.combine),
+      evidence: pick('evidence', base.evidence),
+    },
+    fromBuiltin,
+  };
+}
+
+const canonicalRules = r => JSON.stringify([
+  r.weights.history, r.weights.physical, r.weights.aux, r.weights.diagnosis, r.weights.treatment,
+  r.excess.from, r.excess.to, r.excess.maxFraction,
+  r.overdiagnosis.perItem, r.overdiagnosis.maxFraction, r.combine, r.evidence.weight,
+]);
+
+// 只摘要「会改变分数的量」，不含 ruleVersion/status——版本号是人写的标签，
+// 摘要负责回答「这份成绩单是不是由当前这套数算出来的」。
+export function rulesDigest(rules) { return digest(canonicalRules(rules)); }
+
+export function formatWeights(rules) {
+  return MODULE_ORDER.map(k => `${MODULE_LABEL[k]}${rules.weights[k] == null ? 0 : rules.weights[k]}%`).join(' · ');
+}
 
 export function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 
