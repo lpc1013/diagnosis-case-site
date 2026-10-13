@@ -21,6 +21,7 @@ run_all.sh
 # ===== 大体量生成数据（由上述私有爬虫再生，见 README） =====
 site/data/cases.json
 site/data/diaglib.json
+site/data/history_records.json
 diag_cache.json
 
 # ===== 含凭据/内网原始爬取（已确认含学号等凭据） =====
