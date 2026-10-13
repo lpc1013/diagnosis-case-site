@@ -18,8 +18,14 @@ const ROOT = __dirname;
 const RECON = path.join(ROOT, 'recon');
 const OUT = path.join(ROOT, 'site', 'data', 'history_records.json');
 
-const _CR_SECTIONS = new Set(['基本常识', '现病史', '既往史', '个人史', '家族史', '月经婚育史', '妇产科问题', '小儿问题', '目前一般状况']);
-const _CR_SEP = ['，', '、', '；', '：', ':', ' '];
+// 重放算法与前端共用同一份实现（site/assets/js/domain/history-replay.js）。
+// 两边各抄一份的后果是：构建自检全绿、页面重放出来的却另一套内容。
+const hr = require('./site/assets/js/domain/history-replay.js');
+const _CR_SECTIONS = hr.CR_SECTIONS;
+const _CR_SEP = hr.CR_SEP;
+const cleanSuf = hr.cleanSuf;
+const linesOf = hr.linesOf;
+const replayOps = hr.replayOps;
 
 function norm(s) {
   return (s || '').replace(/\s+/g, '').replace(/[：:\/\\？?。.、；;，,+＋（）()“”"'\']/g, '').toLowerCase();
@@ -43,11 +49,6 @@ function orderedQuestionsFromFinal(finalRight, necSet) {
   }
   return out;
 }
-function linesOf(rec) {
-  return (rec || '').split('\n').map(l => l.trim()).filter(Boolean).filter(l => l !== '检查记录');
-}
-function cleanSuf(s) { return (s || '').replace(/^[,，、；;:： ]+/, ''); }
-
 // 计算 step i 相对 step i-1 的真实增量 ops（带插入锚点 after，保证重放顺序与终态一致）
 function diffOps(oldRec, newRec) {
   const O = linesOf(oldRec), N = linesOf(newRec);
@@ -79,59 +80,7 @@ function diffOps(oldRec, newRec) {
   return ops;
 }
 
-// 重放 ops 到 working（与前端一致），用于自检
-function replayOps(working, ops) {
-  for (const op of ops) {
-    if (op.t === 'add') {
-      let replaced = false;
-      for (let k = 0; k < working.length; k++) {
-        const X = working[k];
-        if (!_CR_SECTIONS.has(X) && op.line.startsWith(X) && op.line.length > X.length) {
-          const s = op.line.slice(X.length);
-          if (_CR_SEP.some(x => s.startsWith(x))) { working[k] = op.line; replaced = true; break; }
-        }
-      }
-      if (replaced) continue;
-      if (op.after != null) { const a = working.indexOf(op.after); if (a >= 0) { working.splice(a + 1, 0, op.line); continue; } }
-      working.push(op.line);
-    } else if (op.t === 'ext') {
-      const full = op.base + op.suf;
-      let hit = -1, mode = 'full';
-      // 1) 整基行命中：working 中已有 op.base 整行，或已有"op.base 的前缀段"（基行未点但其前缀已点 -> 合并）
-      for (let k = 0; k < working.length; k++) {
-        const X = working[k];
-        if (X === op.base || (!_CR_SECTIONS.has(X) && op.base.startsWith(X) && op.base.length > X.length && _CR_SEP.some(s => op.base.slice(X.length).startsWith(s)))) { hit = k; mode = 'full'; break; }
-      }
-      // 2) 尾段命中：op.base 的"最后一段(末分隔符之后)"恰好是 working 中某行 X。
-      //    例：base=习惯与嗜好：…服药史，饮酒史，working 已有 饮酒史(来自已点step34) ->
-      //        把 suf 续到 饮酒史 之后 -> 饮酒史+suf。跳过未点的中间步骤也能合并为一条，且不泄露任何未点基内容。
-      if (hit < 0) {
-        for (let k = 0; k < working.length; k++) {
-          const X = working[k];
-          if (_CR_SECTIONS.has(X) || X.length < 2) continue;
-          const i = op.base.lastIndexOf(X);
-          if (i > 0 && i + X.length === op.base.length && _CR_SEP.includes(op.base[i - 1])) { hit = k; mode = 'tail'; break; }
-        }
-      }
-      if (hit >= 0) { working[hit] = mode === 'full' ? full : working[hit] + op.suf; }
-      else {
-        const cs = cleanSuf(op.suf);
-        if (op.after != null) { const a = working.indexOf(op.after); if (a >= 0) { working.splice(a + 1, 0, cs); continue; } }
-        working.push(cs); // 基未点中：只显示新增后缀，绝不泄露基内容
-      }
-    } else if (op.t === 'del') {
-      const k = working.indexOf(op.line);
-      if (k >= 0) working.splice(k, 1);
-    }
-  }
-  return working;
-}
-function recordFromPicked(steps, pickedIdxs) {
-  const idxs = [...new Set(pickedIdxs)].sort((a, b) => a - b);
-  const working = [];
-  for (const idx of idxs) replayOps(working, steps[idx].ops || []);
-  return working;
-}
+// replayOps / replayPicked 来自 js/domain/history-replay.js（前端用的是同一份）
 
 const reconFiles = {
   '0': 'incr_c0_呕血068.json',
@@ -154,7 +103,7 @@ for (const idx of Object.keys(reconFiles)) {
     const d = JSON.parse(fs.readFileSync(f, 'utf8'));
     const tab = d.tabs && d.tabs['病史采集'];
     if (tab && tab.steps && tab.steps.length) {
-      const exact = tab.steps.map(s => ({ q: s.item, rec: extractCheckRecord(s.fullText) })).filter(s => s.rec);
+      const exact = tab.steps.map(s => ({ q: s.item, rec: extractCheckRecord(s.fullText), sourceType: 'exact' })).filter(s => s.rec);
       if (exact.length) { steps = exact; method = `精确逐步(${exact.length}步)`; }
       else if (tab.finalRight) {
         const finalRec = extractCheckRecord(tab.finalRight);
@@ -165,7 +114,7 @@ for (const idx of Object.keys(reconFiles)) {
           const N = qOrder.length || recLines.length;
           steps = qOrder.map((q, i) => {
             const upto = Math.max(1, Math.ceil(recLines.length * (i + 1) / N));
-            return { q, rec: recLines.slice(0, upto).join('\n') };
+            return { q, rec: recLines.slice(0, upto).join('\n'), sourceType: 'estimated' };
           });
           method = `终态比例还原(${steps.length}步, 终态${recLines.length}行)`;
         }
@@ -176,14 +125,22 @@ for (const idx of Object.keys(reconFiles)) {
   if (!steps) steps = [];
   steps.forEach((s, i) => { s.ops = i === 0 ? linesOf(s.rec).map(l => ({ t: 'add', line: l })) : diffOps(steps[i - 1].rec, s.rec); });
 
-  // 自检：重放全部步骤 必须 == 终态 rec（顺序+集合）
+  // 自检：重放全部步骤必须还原出终态记录。
+  // 以前这里只打日志、结尾照样 writeFileSync —— 等于「发现不一致但继续发布」。
+  // 现在内容对不上直接终止构建；只有纯顺序出入才降级为警告。
   if (steps.length) {
-    const all = recordFromPicked(steps, steps.map((_, i) => i));
-    const finalLines = linesOf(steps[steps.length - 1].rec);
-    const okOrder = JSON.stringify(all) === JSON.stringify(finalLines);
-    const setA = new Set(all), setB = new Set(finalLines);
-    const okSet = all.length === finalLines.length && [...setA].every(x => setB.has(x)) && [...setB].every(x => setA.has(x));
-    console.log(`[${idx}] 自检 重放全部=${okOrder ? '顺序+集合一致✓' : (okSet ? '集合一致(顺序略异)' : '不一致✗')}${okOrder ? '' : '\n    got: ' + all.join(' | ')}`);
+    const chk = hr.replayMatchesFinal(steps);
+    if (!chk.set) {
+      console.error(`[${idx}] 自检失败：重放内容与终态记录不一致`);
+      console.error('    got : ' + chk.got.join(' | '));
+      console.error('    want: ' + chk.want.join(' | '));
+      throw new Error(`病例 ${idx}（${(cases[idx] && cases[idx].name) || ''}）病史重放不一致，拒绝写出不一致的数据`);
+    }
+    if (!chk.order) {
+      console.warn(`[${idx}] 重放集合一致但顺序有出入（不阻断：页面按重放顺序展示）`);
+    } else {
+      console.log(`[${idx}] 自检 重放全部=顺序+集合一致✓`);
+    }
   }
 
   const stepNorm = new Set(steps.map(s => norm(s.q)));

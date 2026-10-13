@@ -22,6 +22,31 @@ function readMd(folder, name) {
 
 const CASE_FILES = ['呕血068', '记忆力定向力减退、走路不稳', '双下肢浮肿', '血压升高'];
 
+// 前端契约与病例配对只保留一份实现，构建期就地自检
+const { validateCases } = require('./site/assets/js/data/schema.js');
+const { matchRawFiles } = require('./site/assets/js/data/case-registry.js');
+
+const RAW_DIR = path.join(SRC, '_源数据');
+
+// 病例 ↔ 原始 JSON 必须由文件内容（meta.name）决定。
+// 按目录枚举顺序取「第 idx 个文件」是个没有代码保证的假设：新增导出、换文件系统
+// 都可能把 A 例的答案接到 B 例的结构上，而构建照样成功、页面照样能跑。
+function pairRawFiles() {
+  const files = fs.readdirSync(RAW_DIR).filter(f => f.endsWith('.json'));
+  const entries = files.map(f => {
+    let j;
+    try { j = JSON.parse(fs.readFileSync(path.join(RAW_DIR, f), 'utf8')); }
+    catch (e) { throw new Error(`原始数据无法解析：${f} — ${e.message}`); }
+    return { file: f, name: (j.meta && j.meta.name) || '', id: (j.meta && (j.meta._id || j.meta.id)) || '' };
+  });
+  const { map, errors } = matchRawFiles(CASE_FILES, entries);
+  if (errors.length) throw new Error('病例与原始数据配对失败：\n  - ' + errors.join('\n  - '));
+  return map;
+}
+
+const RAW_BY_CASE = pairRawFiles();
+const toCost = v => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : 0; };
+
 // ---------- 解析 选项反馈 (Layer1 + Layer2) ----------
 function parseOptions(md) {
   const sec = {};
@@ -346,7 +371,7 @@ function buildAux(raw, opt, cor) {
         out.push({
           name: stripMd(n.name), result: n.result || o.result || '',
           unit: n.unit || '', ref: n.referenceValue || o.ref || '',
-          sig: n.clinicalSignificance || o.sig || '', cost: n.cost || 0,
+          sig: n.clinicalSignificance || o.sig || '', cost: toCost(n.cost),
           necessary: !!c, std: c ? c.std : '', score: c ? c.score : 0,
           abbreviation: n.abbreviation || ''
         });
@@ -462,11 +487,20 @@ function buildTreatment(raw, opt, cor) {
   const corTgroups = cor.treatment;
   const optTmap = {};
   opt.treatment.forEach(g => g.items.forEach(it => optTmap[norm(it.name)] = it));
+  let unknownScene = 0;
+  // 「源数据没标场景」不等于「四个场景都适用」。这里仍给出全部场景以免丢选项，
+  // 但必须打上 scenesUnknown：界面据此说明「未标注」，构建日志汇总待人工核对。
+  const sceneOf = nm => {
+    const s = sceneMap[norm(nm)];
+    if (s && s.length) return { scenes: s, scenesUnknown: false };
+    unknownScene++;
+    return { scenes: TX_SCENES.slice(), scenesUnknown: true };
+  };
   const treatment = corTgroups.map(g => ({
     group: g.group,
     items: g.items.map(it => ({
       name: it.name, attr: (optTmap[norm(it.name)] || {}).attr || '', necessary: true, std: it.std, score: it.score,
-      scenes: sceneMap[norm(it.name)] || TX_SCENES.slice()   // 数据无标记时默认全部 4 场景
+      ...sceneOf(it.name)
     }))
   }));
   opt.treatment.forEach(g => {
@@ -475,14 +509,14 @@ function buildTreatment(raw, opt, cor) {
       const tg = treatment.find(t => t.group === g.group);
       g.items.forEach(it => {
         if (!cg.items.some(ci => norm(ci.name) === norm(it.name))) {
-          const sc = sceneMap[norm(it.name)] || TX_SCENES.slice();
-          tg.items.push({ name: it.name, attr: it.attr, necessary: false, std: '', score: 0, scenes: sc });
+          tg.items.push({ name: it.name, attr: it.attr, necessary: false, std: '', score: 0, ...sceneOf(it.name) });
         }
       });
     } else {
-      treatment.push({ group: g.group, items: g.items.map(it => ({ name: it.name, attr: it.attr, necessary: false, std: '', score: 0, scenes: sceneMap[norm(it.name)] || TX_SCENES.slice() })) });
+      treatment.push({ group: g.group, items: g.items.map(it => ({ name: it.name, attr: it.attr, necessary: false, std: '', score: 0, ...sceneOf(it.name) })) });
     }
   });
+  if (unknownScene) console.log(`    治疗场景未标注 ${unknownScene} 项：已按全部场景展示并标记 scenesUnknown，需人工核对`);
   // 真实爬取数据中不存在「病人处置」分类（处置由治疗方式闸门决定），丢弃答案数据误带的该组
   return treatment.filter(g => g.group !== '病人处置');
 }
@@ -605,10 +639,12 @@ CASE_FILES.forEach((name, idx) => {
   const opt = parseOptions(readMd('选项反馈', name));
   const cor = parseCorrect(readMd('正确答案', name));
 
-  const rawDir = path.join(ROOT, 'overall_cases/_源数据');
-  const rawFile = fs.readdirSync(rawDir).filter(f => f.endsWith('.json'))[idx];
-  const raw = JSON.parse(fs.readFileSync(path.join(rawDir, rawFile), 'utf8'));
+  const rawFile = RAW_BY_CASE.get(name);
+  const raw = JSON.parse(fs.readFileSync(path.join(RAW_DIR, rawFile), 'utf8'));
   const meta = raw.meta || {};
+  if ((meta.name || '').trim() !== name) {
+    throw new Error(`病例名不符：${rawFile} 的 meta.name=「${meta.name}」，清单要求「${name}」——配对出错，拒绝继续混档`);
+  }
 
   // 限制阈值（官网进度条真实语义，四个模块都有）
   //   standardCount   = 标准线：≤ 此值 → 绿色（标准内）
@@ -651,9 +687,26 @@ CASE_FILES.forEach((name, idx) => {
 
   cases.push({
     idx, name: meta.name || name, dept: meta.dept || '', patient: meta.patient || '',
-    gender: meta.gender || '', age: meta.age || '', sections, reports, increments, limits
+    gender: meta.gender || '', age: meta.age || '', sections, reports, increments, limits,
+    // 每个模块的数据来自哪一份原始导出，留痕以便事后核对
+    src: { file: rawFile, id: String(meta._id || meta.id || ''), pairedBy: 'meta.name' },
   });
 });
+
+// 写出前用前端同一份契约自检：结构不合格就中止，绝不带着错数据发布
+const problems = validateCases(cases);
+const errors = problems.filter(p => p.level === 'error');
+const warns = problems.filter(p => p.level === 'warn');
+if (warns.length) {
+  console.warn(`数据校验：${warns.length} 条警告`);
+  warns.slice(0, 10).forEach(p => console.warn('  ! ' + p.msg));
+}
+if (errors.length) {
+  console.error(`数据校验失败（${errors.length} 条），未写出 cases.json：`);
+  errors.slice(0, 30).forEach(p => console.error('  ✗ ' + p.msg));
+  if (errors.length > 30) console.error(`  ...共 ${errors.length} 条`);
+  throw new Error('构建中止：生成的病例数据不符合前端契约，发布出去会静默误导训练结果');
+}
 
 fs.writeFileSync(path.join(OUT, 'cases.json'), JSON.stringify(cases, null, 1), 'utf8');
 
