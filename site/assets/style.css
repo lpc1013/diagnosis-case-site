@@ -866,6 +866,7 @@ body {
 .le-help, .le-list { font-size: 12px; color: var(--muted); }
 .le-list { padding-left: 18px; }
 .cls-未分类 { background: #eef2f7; color: var(--muted); }
+.attr-warn { background: #fffbeb; color: #92400e; border: 1px dashed #fde68a; border-radius: 6px; padding: 0 5px; }
 
 @media (prefers-reduced-motion: reduce) {
   .lock-banner.flash { animation: none; }

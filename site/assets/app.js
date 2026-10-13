@@ -377,7 +377,7 @@ function renderTreatment() {
       <div class="group-body">
         ${g.items.map(it => `
           <details class="item ${isNec(it) ? 'nec' : ''}">
-            <summary><span class="i-name">${esc(it.name)}</span>${mode === 'answer' ? (it.scenes && it.scenes.length ? `<span class="attr">${esc(it.scenes.join('/'))}</span>` : (it.attr ? `<span class="attr">${esc(it.attr)}</span>` : '')) : (it.attr ? `<span class="attr">${esc(it.attr)}</span>` : '')}${isNec(it) ? '<span class="badge-nec">必要</span><span class="badge-score">' + scoreOf(it) + '分</span>' : ''}</summary>
+            <summary><span class="i-name">${esc(it.name)}</span>${mode === 'answer' ? (it.scenes && it.scenes.length ? `<span class="attr${it.scenesUnknown ? ' attr-warn' : ''}">${esc(it.scenes.join('/'))}${it.scenesUnknown ? '（源数据未标注，非“全部适用”）' : ''}</span>` : (it.attr ? `<span class="attr">${esc(it.attr)}</span>` : '')) : (it.attr ? `<span class="attr">${esc(it.attr)}</span>` : '')}${isNec(it) ? '<span class="badge-nec">必要</span><span class="badge-score">' + scoreOf(it) + '分</span>' : ''}</summary>
             ${it.attr && !isNec(it) ? `<div class="i-detail"><div class="kv attr"><span class="k">属性</span><span class="v">${esc(it.attr)}</span></div></div>` : ''}
           </details>`).join('')}
       </div>
@@ -877,9 +877,11 @@ function setRpOpen(open) {
       // 抽屉只是 translateY 出屏，并不脱离 Tab 顺序；关闭时必须 inert 掉，
       // 否则键盘用户会焦点落到一个看不见的提交按钮上。桌面端报告栏常驻，不能 inert。
       col.inert = isMobileLayout();
-      if (wasOpen && rpLastFocus && document.body.contains(rpLastFocus)) {
-        rpLastFocus.focus({ preventScroll: true });
-      }
+      // 关闭后焦点必须有个去处：记住的触发元素可能已经不在文档里（重渲染）或本就是 body，
+      // 那时退回悬浮按钮，别让键盘用户掉回页面顶部。
+      const remembered = rpLastFocus && rpLastFocus !== document.body && document.body.contains(rpLastFocus) ? rpLastFocus : null;
+      const back = remembered || document.getElementById('rpToggle');
+      if (back) back.focus({ preventScroll: true });
       rpLastFocus = null;
     }
   }
