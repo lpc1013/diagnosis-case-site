@@ -157,8 +157,11 @@ export function computeScore(caseObj, answer, rules) {
       ? pens.reduce((a, p) => Math.max(a, p.fraction), 0)
       : clamp01(pens.reduce((a, p) => a + p.fraction, 0));
     const rate = clamp01(coverage * (1 - frac));
+    // 分值必须能对上账：模块实际少拿的那部分，只记在「生效的那条」惩罚上。
+    // combine='max' 时若每条都记全额，明细里的扣分之和会大于真实扣分。
     for (const p of pens) {
-      p.points = -(weightPct * coverage * p.fraction);
+      p.binding = R.combine === 'max' ? p.fraction === frac : true;
+      p.points = p.binding ? -(weightPct * coverage * p.fraction) : 0;
       penalties.push(p);
     }
     breakdown.push({

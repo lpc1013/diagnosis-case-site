@@ -232,6 +232,45 @@ test('惩罚系数表可整体替换（实测官网曲线后只改规则）', ()
   assert.ok(lenient > base && lenient < 100, `规则表没生效: ${base} / ${lenient}`);
 });
 
+test('应用状态→答卷投影：跳过这层引擎会读空（曾经真实发生过）', () => {
+  const { caseAnswer } = require(DOMAIN('answer.js'));
+  const c = fixtureCase();
+  // 应用里 picked / auxCheckCount / diagClass / diagMarks 都按病例编号分层
+  const appState = {
+    cur: 0,
+    picked: {
+      0: {
+        history: new Set(caseItems(c.sections, 'history').filter(i => i.nec).map(i => i.key)),
+        physical: new Set(caseItems(c.sections, 'physical').filter(i => i.nec).map(i => i.key)),
+        aux: new Set(caseItems(c.sections, 'aux').filter(i => i.nec).map(i => i.key)),
+        treatment: new Set(caseItems(c.sections, 'treatment').filter(i => i.nec).map(i => i.key)),
+      },
+    },
+    auxCheckCount: { 0: 1 },
+    diagClass: { 0: { '急性糜烂出血性胃炎': '主要诊断', '失血性贫血': '次要诊断' } },
+    diagMarks: { 0: { '急性糜烂出血性胃炎': { support: new Set(), unsupport: new Set() }, '失血性贫血': { support: new Set(), unsupport: new Set() } } },
+  };
+  const projected = caseAnswer(appState, 0);
+  const good = computeScore(c, projected, DEFAULT_RULES);
+  assert.strictEqual(good.total, 100, '按应用真实形状作答应能满分，实得 ' + good.total);
+  // 直接把整个 state 交给引擎（少投影一层）——键找不到，分数会静默塌成 0
+  const bad = computeScore(c, appState, DEFAULT_RULES);
+  assert.ok(bad.total < 20, '未投影时引擎本该读空；若这条不为 0，说明引擎又开始自己猜状态了：' + bad.total);
+});
+
+test('扣分明细之和必须等于实际扣分（不能出现两条各记全额）', () => {
+  const c = fixtureCase();
+  // 同时踩中「检查次数」和「花费」两条线，combine=max 只应扣一次
+  const a = answer(c, { pick: () => true, auxRuns: 8, diagnoses: [] });
+  const r = computeScore(c, a, DEFAULT_RULES);
+  const auxPens = r.penalties.filter(p => p.sec === 'aux');
+  assert.strictEqual(auxPens.length, 2, '本例应同时踩中次数与花费两条线: ' + JSON.stringify(r.penalties));
+  assert.strictEqual(auxPens.filter(p => p.binding).length, 1, '取最重时应只有一条生效');
+  const declared = r.penalties.reduce((s, p) => s + p.points, 0);
+  const actual = r.breakdown.reduce((s, b) => s + (b.lost || 0), 0);
+  assert.ok(Math.abs(declared + actual) < 1e-9, `明细 ${declared.toFixed(2)} 与实际少拿 ${actual.toFixed(2)} 对不上账`);
+});
+
 // —— 真实数据（缺失则跳过；仓库不含 8MB 生成数据） ——
 const REAL = path.join(__dirname, '..', 'site', 'data', 'cases.json');
 test('真实四例：结构校验 + 全选必要项可达满分', { skip: !fs.existsSync(REAL) }, () => {

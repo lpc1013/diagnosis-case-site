@@ -12,6 +12,9 @@
   --nec-fg: #15803d;
   --shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
   --radius: 10px;
+  /* v54：这两枚变量此前被引用却从未定义，声明会静默失效 */
+  --green: #16a34a;
+  --teal-dark: #0f766e;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; overflow-x: hidden; }  /* v52 横向溢出兜底 */
@@ -561,7 +564,8 @@ body {
   .limit-val { font-size: 12px; line-height: 1.5; }
   .limit-val { flex: 1 1 100%; }
   .limit-bar { padding: 6px 10px; }
-  .limit-note { display: none; } /* 手机端隐藏说明，颜色即语义 */
+  .limit-note { display: none; }        /* 长句窄屏放不下 */
+  .limit-note-short { display: inline-block; } /* 但扣分状态不能只剩颜色：色觉差异与不熟悉规则的学生要能读出「已扣分」 */
   .limit-track { height: 10px; }
 
   /* 诊断库行 */
@@ -748,7 +752,7 @@ body {
   body.sb-open .sidebar { transform: translateX(0); visibility: visible; }
   body.sb-collapsed .sidebar { transform: translateX(-102%); visibility: hidden; transition: transform .26s ease, visibility 0s linear .26s; }
   /* 收起后中间/右侧平分剩余空间（grid 1fr 1fr 严格平分，规避 flex 滚动条幽灵差） */
-  body.sb-collapsed .layout { display: grid; grid-template-columns: 1fr 1fr; }
+  body.sb-collapsed .layout { display: grid; grid-template-columns: 3fr 2fr; }  /* v54 训练区优先：报告很少比选项列表长，等分只会挤压选项 */
   body.sb-collapsed .main, body.sb-collapsed .report-col { flex: none; width: auto; min-width: 0; }
 }
 
@@ -815,3 +819,56 @@ body {
   transition: background .15s;
 }
 .btn-reset-practice:hover { background: #fef2f2; }
+
+/* ================= v54：审计整改（分组键盘化 / 限额可读性 / 评分明细 / 锁定态） ================= */
+.aux-sec-toggle {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px;
+  background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit;
+  text-align: left; cursor: pointer;
+}
+.aux-sec-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+.aux-sec-title { font-weight: 700; }
+.aux-grp-body { display: flex; flex-direction: column; gap: 2px; }
+
+.limit-note-short { display: none; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: #eef2f7; color: var(--muted); }
+.limit-bar.green .limit-note-short { background: var(--nec-bg); color: var(--nec-fg); }
+.limit-bar.orange .limit-note-short { background: #fef3c7; color: #b45309; }
+.limit-bar.red .limit-note-short { background: #fee2e2; color: #b91c1c; }
+
+.lock-banner {
+  position: sticky; top: 0; z-index: 3; margin-bottom: 12px;
+  padding: 10px 12px; border-radius: 9px; font-size: 13px; line-height: 1.6;
+  background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+}
+.lock-banner.flash { animation: lockFlash .55s ease; }
+@keyframes lockFlash { 0%, 100% { background: #fff7ed; } 45% { background: #ffedd5; } }
+
+.score-preview { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; text-align: center; }
+.sp-head { font-size: 11px; letter-spacing: 1px; color: var(--muted); }
+.sp-total { font-size: 28px; font-weight: 800; color: var(--primary); font-variant-numeric: tabular-nums; }
+.sp-note { font-size: 11px; color: var(--muted); line-height: 1.5; }
+.score-preview-pen { margin-top: 6px; font-size: 11.5px; color: #b45309; }
+.sb-row { grid-template-columns: 1fr auto auto; }
+.sb-pts { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sb-pen { color: #b91c1c; margin-left: 6px; }
+.score-pen { margin-top: 12px; text-align: left; border-top: 1px dashed var(--border); padding-top: 8px; }
+.sp-title { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+.sp-row { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; align-items: baseline; }
+.sp-ded { color: #b91c1c; font-weight: 700; margin-left: auto; }
+.score-notes { margin-top: 10px; text-align: left; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
+
+.rp-note { font-size: 11.5px; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 7px 9px; margin-bottom: 10px; overflow: hidden; }
+.rp-note-x { float: right; border: 0; background: none; cursor: pointer; font-size: 15px; line-height: 1; color: inherit; padding: 0 2px; }
+
+.load-error { text-align: left; line-height: 1.7; }
+.le-kind { font-size: 11px; font-weight: 700; color: #b91c1c; letter-spacing: .5px; }
+.le-msg { font-size: 13px; margin: 4px 0; }
+.le-help, .le-list { font-size: 12px; color: var(--muted); }
+.le-list { padding-left: 18px; }
+.cls-未分类 { background: #eef2f7; color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .lock-banner.flash { animation: none; }
+  .aux-sec-head::before { transition: none; }
+  #rpToggle.pulse { animation: none; }
+}

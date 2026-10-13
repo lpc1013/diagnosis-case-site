@@ -1,5 +1,12 @@
 'use strict';
 
+import { norm, keyOf, caseItems, countNec, countTotal, necKeys, auxTopLevel, historyPath, safeCost } from './js/domain/case.js';
+import { caseAnswer } from './js/domain/answer.js';
+import { computeScore as domainComputeScore, DEFAULT_RULES, limitMetrics, excessFraction, MODULE_LABEL } from './js/domain/scoring.js';
+import { replayPicked, replayAll, CR_SECTIONS } from './js/domain/history-replay.js';
+import { loadJson, validateCases, LOAD_ERROR, LOAD_HELP } from './js/data/schema.js';
+import { loadFrom, saveTo, emptyApp } from './js/data/persistence.js';
+
 const SECTIONS = [
   { key: 'history', label: '病史' },
   { key: 'physical', label: '体格' },
@@ -21,80 +28,28 @@ const state = {
   picked: {},                // picked[caseIdx][sec] = Set(key)
   diagQ: '',                 // 诊断模块内搜索
   diagMarks: {},             // diagMarks[caseIdx][diagName] = { support:Set(key), unsupport:Set(key) }
-  diagClass: {},             // diagClass[caseIdx][diagName] = '主要诊断'|...
+  diagClass: {},             // diagClass[caseIdx][diagName] = '主要诊断'|...；缺键 = 学生尚未分类
   activeDiag: {},            // activeDiag[caseIdx] = diagName（依据列表作用对象）
   txScene: {},               // txScene[caseIdx] = '住院'|'门诊'|'急诊'|'转诊治疗'
   auxPending: {},            // auxPending[caseIdx] = Set(key) 辅助检查多选「待检测」
   auxExpanded: {},           // auxExpanded[caseIdx] = Set(grpKey) 辅助组展开集合（v48 默认全折叠，点开才展开）
   auxCheckCount: {},          // auxCheckCount[caseIdx] = 检测动作次数（进度条口径=检查次数，v44）
   sbOpen: true,               // v50 桌面左侧病例抽屉：默认展开，会话内状态（不持久化）
-  scores: {},                // scores[caseIdx] = { total, breakdown:[{label,weight,rate}], ts }
+  scores: {},                // scores[caseIdx] = { total, breakdown, penalties, ts }
   hintDismissed: false,      // 移动端「提交位置」提示条是否已关闭
+  storageNotice: '',         // 本地进度迁移/丢弃说明（会话内展示一次）
 };
 
 // ---------- 本地持久化（练习进度 + 评分，刷新不丢）----------
-const LS_KEY = 'wb_clinthink_v1';
-function serializePicked() {
-  const o = {};
-  for (const ci in state.picked) {
-    o[ci] = {};
-    for (const sec in state.picked[ci]) o[ci][sec] = [...state.picked[ci][sec]];
-  }
-  return o;
-}
-function serializeDiagMarks() {
-  const out = {};
-  for (const ci in state.diagMarks) {
-    const byName = state.diagMarks[ci];
-    if (!byName) continue;
-    const o = {};
-    for (const name in byName) {
-      const m = byName[name];
-      if (!m) continue;
-      const s = Array.from(m.support || []), u = Array.from(m.unsupport || []);
-      if (s.length || u.length) o[name] = { support: s, unsupport: u };
-    }
-    if (Object.keys(o).length) out[ci] = o;
-  }
-  return out;
-}
+// 序列化/迁移/校验都在 js/data/persistence.js，这里只负责「什么时候写」。
 function saveState() {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify({ picked: serializePicked(), scores: state.scores || {}, hintDismissed: !!state.hintDismissed, auxCheckCount: state.auxCheckCount || {}, diagMarks: serializeDiagMarks(), activeDiag: state.activeDiag || {} }));
-  } catch (e) { /* 容量或隐私模式，忽略 */ }
+  if (!saveTo(localStorage, state)) return;
 }
 function loadState() {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return;
-    const d = JSON.parse(raw);
-    if (d.picked) {
-      for (const ci in d.picked) {
-        state.picked[ci] = state.picked[ci] || {};
-        for (const sec in d.picked[ci]) state.picked[ci][sec] = new Set(d.picked[ci][sec]);
-      }
-    }
-    if (d.scores) state.scores = d.scores;
-    if (typeof d.hintDismissed === 'boolean') state.hintDismissed = d.hintDismissed;
-    if (d.auxCheckCount) state.auxCheckCount = d.auxCheckCount;
-    // P2#6 诊断标记/当前诊断持久化（刷新或误关标签页不丢）
-    if (d.diagMarks) {
-      for (const ci in d.diagMarks) {
-        state.diagMarks[ci] = state.diagMarks[ci] || {};
-        for (const name in d.diagMarks[ci]) {
-          const m = d.diagMarks[ci][name];
-          state.diagMarks[ci][name] = { support: new Set(m.support || []), unsupport: new Set(m.unsupport || []) };
-        }
-      }
-    }
-    if (d.activeDiag) state.activeDiag = d.activeDiag;
-    // v44 兼容旧数据：无检测次数记录时按已采集项目数兜底（近似旧口径，避免进度跳变）
-    for (const ci in state.picked) {
-      if (state.picked[ci] && state.picked[ci].aux && state.auxCheckCount[ci] == null) {
-        state.auxCheckCount[ci] = state.picked[ci].aux.size;
-      }
-    }
-  } catch (e) { /* 损坏则忽略 */ }
+  const { app, report } = loadFrom(localStorage, state.cases || []);
+  Object.assign(state, app);
+  const notes = [].concat(report.migrated || [], report.dropped || []);
+  if (notes.length) state.storageNotice = notes.join('；');
 }
 
 // ---------- 工具 ----------
@@ -110,6 +65,11 @@ function isNec(g) { return !!g.necessary; }
 function scoreOf(g) { return g.score || 0; }
 // 寻血标记：祖先结构含正确（必要）项时点亮
 function scentMark(n) { return n > 0 ? '<span class="scent-dot" title="含正确选项"></span>' : ''; }
+// 价格必须先是数字再进 HTML：生成数据一旦被写脏，直接插值就是注入点
+function priceHTML(v, symbol) {
+  const c = safeCost(v);
+  return c ? `<span class="price">${symbol}${esc(String(c))}</span>` : '';
+}
 function necCountInNode(n) {
   if (n.items) return n.items.filter(isNec).length;
   if (n.subs) return n.subs.reduce((a, s) => a + necCountInNode(s), 0);
@@ -117,14 +77,11 @@ function necCountInNode(n) {
   return isNec(n) ? 1 : 0; // 辅助：叶子节点自身即项目
 }
 function getCase() { return state.cases[state.cur]; }
-function norm(s) { return (s || '').replace(/\s+/g, '').replace(/[：:\/\\]/g, '').toLowerCase(); }
 
-function keyOf(sec, item, path) {
-  const p = (path || []).map(x => norm(x)).join('|');
-  if (sec === 'history') return 'h|' + norm(item.q);
-  if (sec === 'diagnosis') return 'd|' + norm(item.name);
-  return sec[0] + '|' + p + '|' + norm(item.name || item.q);
-}
+// 「只看必要项」是答案模式的对照工具。练习模式必须无视它，
+// 否则切回练习时筛选仍然生效，学生会以为选项变少了。
+function necFilterOn() { return state.mode === 'answer' && state.necOnly; }
+
 function pickedSet() {
   state.picked[state.cur] = state.picked[state.cur] || {};
   state.picked[state.cur][state.sec] = state.picked[state.cur][state.sec] || new Set();
@@ -134,7 +91,10 @@ function isPicked(sec, key) {
   const c = state.picked[state.cur];
   return !!(c && c[sec] && c[sec].has(key));
 }
+// 提交即锁定：答卷与已展示的评分必须是同一时刻的状态
+function answerLocked() { return !!(state.scores && state.scores[state.cur]); }
 function togglePick(sec, key) {
+  if (answerLocked()) return;
   const set = pickedSet();
   // 练习模式：已采集项不可回退取消（模拟考试，选项提交后不可撤销）
   if (set.has(key)) return;
@@ -142,63 +102,27 @@ function togglePick(sec, key) {
   saveState();
 }
 
-// 统计必要项
-function countNecHistory(h) { return h.reduce((a, cat) => a + cat.subs.reduce((b, sub) => b + sub.items.filter(isNec).length, 0), 0); }
-function countTotalHistory(h) { return h.reduce((a, cat) => a + cat.subs.reduce((b, sub) => b + sub.items.length, 0), 0); }
-function countNecPhysical(nodes) {
-  return nodes.reduce((a, n) => a + (n.items ? n.items.filter(isNec).length : (n.subs ? countNecPhysical(n.subs) : 0)), 0);
+function lockBannerHTML() {
+  if (!answerLocked()) return '';
+  const s = state.scores[state.cur];
+  return `<div class="lock-banner" role="status">本病例已提交（${s.total.toFixed(1)} 分），答卷已锁定：继续点选不会改变状态，也不会改动上方评分。要重做请点右侧「重新练习本病例」。</div>`;
 }
-function countTotalPhysical(nodes) {
-  return nodes.reduce((a, n) => a + (n.items ? n.items.length : (n.subs ? countTotalPhysical(n.subs) : 0)), 0);
-}
-function countNecAux(nodes) {
-  return nodes.reduce((a, n) => a + (n.children ? countNecAux(n.children) : (isNec(n) ? 1 : 0)), 0);
-}
-function countTotalAux(nodes) {
-  return nodes.reduce((a, n) => a + (n.children ? countTotalAux(n.children) : 1), 0);
-}
-function countNecTreatment(t) { return t.reduce((a, g) => a + g.items.filter(isNec).length, 0); }
-function countTotalTreatment(t) { return t.reduce((a, g) => a + g.items.length, 0); }
-
-function necessaryKeys(sec) {
-  const s = getCase().sections, out = [];
-  if (sec === 'history') s.history.forEach(cat => cat.subs.forEach(sub => sub.items.forEach(it => { if (it.necessary) out.push(keyOf('history', it)); })));
-  else if (sec === 'physical') s.physical.forEach(n => collectPhysicalKeys(n, [], out));
-  else if (sec === 'aux') auxTopLevel().forEach(n => collectAuxKeys(n, [], out));
-  else if (sec === 'treatment') s.treatment.forEach(g => g.items.forEach(it => { if (it.necessary) out.push(keyOf('treatment', it, [g.group])); }));
-  else if (sec === 'diagnosis') s.diagnosis.forEach(d => out.push(keyOf('diagnosis', d)));
-  return out;
-}
-function collectPhysicalKeys(n, path, out) {
-  const p2 = path.concat(n.name);
-  if (n.items) n.items.forEach(it => { if (it.necessary) out.push(keyOf('physical', it, p2)); });
-  else if (n.subs) n.subs.forEach(s => collectPhysicalKeys(s, p2, out));
-}
-function collectAuxKeys(n, path, out) {
-  const p2 = path.concat(n.name);
-  if (n.children) n.children.forEach(c => collectAuxKeys(c, p2, out));
-  else if (n.necessary) out.push(keyOf('aux', n, p2));
+function flashLocked() {
+  const el = document.querySelector('.lock-banner');
+  if (!el) return;
+  el.classList.remove('flash');
+  void el.offsetWidth;   // 强制重排以重启动画
+  el.classList.add('flash');
+  el.scrollIntoView({ block: 'nearest' });
 }
 
+// ---------- 板块条目：键与规范路径只由 domain/case.js 定义 ----------
+function secItems(sec) { return caseItems(getCase().sections, sec); }
+function countNecOf(sec) { return countNec(getCase().sections, sec); }
+function countTotalOf(sec) { return countTotal(getCase().sections, sec); }
+// 已采集条目（报告面板用）
 function collectPicked(sec) {
-  const s = getCase().sections, out = [];
-  const push = (item, l1, l2, nec, path) => { if (isPicked(sec, keyOf(sec, item, path))) out.push({ l1, l2, nec: !!nec }); };
-  if (sec === 'history') s.history.forEach(cat => cat.subs.forEach(sub => sub.items.forEach(it => push(it, it.q, it.reply, it.necessary, [cat.category, sub.name]))));
-  else if (sec === 'physical') s.physical.forEach(n => collectPhysicalPicked(n, [], out));
-  else if (sec === 'aux') auxTopLevel().forEach(n => collectAuxPicked(n, [], out));
-  else if (sec === 'treatment') s.treatment.forEach(g => g.items.forEach(it => push(it, it.name + (it.attr ? `（${it.attr}）` : ''), '', it.necessary, [g.group])));
-  else if (sec === 'diagnosis') s.diagnosis.forEach(d => push(d, d.name, '', true, []));
-  return out;
-}
-function collectPhysicalPicked(n, path, out) {
-  const p2 = path.concat(n.name);
-  if (n.items) n.items.forEach(it => { if (isPicked('physical', keyOf('physical', it, p2))) out.push({ l1: it.name, l2: it.result, nec: !!it.necessary }); });
-  else if (n.subs) n.subs.forEach(s => collectPhysicalPicked(s, p2, out));
-}
-function collectAuxPicked(n, path, out) {
-  const p2 = path.concat(n.name);
-  if (n.children) n.children.forEach(c => collectAuxPicked(c, p2, out));
-  else if (isPicked('aux', keyOf('aux', n, p2))) out.push({ l1: n.name, l2: n.result + (n.ref ? `（参考值 ${n.ref}）` : '') + (n.sig ? `（临床意义 ${n.sig}）` : ''), nec: !!n.necessary });
+  return secItems(sec).filter(i => isPicked(sec, i.key)).map(i => ({ l1: i.label, l2: i.detail, nec: i.nec }));
 }
 
 // 诊断「依据列表」对病史的取据：来自系统「检查记录」的结构化总结（而非单纯问答）。
@@ -213,7 +137,7 @@ function historyEvidenceEntries() {
   for (const ln of body.split('\n')) {
     const t = ln.trim();
     if (!t) continue;
-    if (_CR_SECTIONS.has(t)) { ctx = ''; continue; }
+    if (CR_SECTIONS.has(t)) { ctx = ''; continue; }
     // 小节标题（伴随症状1 / 主要症状 / 起病情况与持续时间 …）：作为后续条目的上下文前缀，本身不入据
     if (t.length <= 10 && !/[？?。.！!，,、：:；;]/.test(t)) { ctx = t; continue; }
     let label = t, detail = '';
@@ -226,29 +150,22 @@ function historyEvidenceEntries() {
 
 // 诊断依据候选池：来自「已采集」的病史/体格/辅助项目（含错误/干扰项）
 function collectEvidenceCandidates() {
-  const s = getCase().sections, out = [];
+  const out = [];
   // 病史：依据取自系统「检查记录」结构化总结；无结构化数据时回退为单纯问答
   const histEntries = historyEvidenceEntries();
   if (histEntries) {
     for (const e of histEntries) out.push({ sec: '病史采集', key: e.key, label: e.label, detail: e.detail });
   } else {
-    s.history.forEach(cat => cat.subs.forEach(sub => sub.items.forEach(it => {
-      if (isPicked('history', keyOf('history', it, [cat.category, sub.name])))
-        out.push({ sec: '病史采集', key: keyOf('history', it, [cat.category, sub.name]), label: it.q, detail: it.reply });
-    })));
+    for (const i of secItems('history')) {
+      if (isPicked('history', i.key)) out.push({ sec: '病史采集', key: i.key, label: i.item.q, detail: i.item.reply });
+    }
   }
-  const pp = (n, path) => {
-    const p2 = path.concat(n.name);
-    if (n.items) n.items.forEach(it => { if (isPicked('physical', keyOf('physical', it, p2))) out.push({ sec: '体格检查', key: keyOf('physical', it, p2), label: it.name, detail: it.result }); });
-    else if (n.subs) n.subs.forEach(s => pp(s, p2));
-  };
-  s.physical.forEach(n => pp(n, []));
-  const pa = (n, path) => {
-    const p2 = path.concat(n.name);
-    if (n.children) n.children.forEach(c => pa(c, p2));
-    else if (isPicked('aux', keyOf('aux', n, p2))) out.push({ sec: '辅助检查', key: keyOf('aux', n, p2), label: n.name, detail: (n.result || '') + (n.ref ? `（参考值 ${n.ref}）` : '') + (n.sig ? `（临床意义 ${n.sig}）` : '') });
-  };
-  auxTopLevel().forEach(n => pa(n, []));
+  for (const i of secItems('physical')) {
+    if (isPicked('physical', i.key)) out.push({ sec: '体格检查', key: i.key, label: i.item.name, detail: i.item.result });
+  }
+  for (const i of secItems('aux')) {
+    if (isPicked('aux', i.key)) out.push({ sec: '辅助检查', key: i.key, label: i.item.name, detail: i.detail });
+  }
   return out;
 }
 
@@ -270,7 +187,7 @@ function renderSidebar() {
   el.innerHTML = state.cases.map((c, i) => {
     const practice = state.mode === 'practice';
     const scoreLine = practice ? '' :
-      `<span class="c-score">必要项 ${countNecHistory(c.sections.history) + countNecPhysical(c.sections.physical) + countNecAux(c.sections.aux) + c.sections.diagnosis.length + countNecTreatment(c.sections.treatment)}</span>`;
+      `<span class="c-score">必要项 ${['history', 'physical', 'aux', 'diagnosis', 'treatment'].reduce((a, sec) => a + countNec(c.sections, sec), 0)}</span>`;
     return `<button class="case-card ${i === state.cur ? 'active' : ''}" data-i="${i}"${i === state.cur ? ' aria-current="true"' : ''}>
       <span class="c-name">${esc(c.name)}</span>
       <span class="c-meta">${esc(c.dept)} · ${esc(c.patient)} · ${esc(c.gender)} · ${esc(c.age)}</span>
@@ -299,13 +216,8 @@ function renderHead() {
 // ---------- tabs ----------
 function renderTabs() {
   const s = getCase().sections;
-  const totals = {
-    history: [countNecHistory(s.history), countTotalHistory(s.history)],
-    physical: [countNecPhysical(s.physical), countTotalPhysical(s.physical)],
-    aux: [countNecAux(s.aux), countTotalAux(s.aux)],
-    diagnosis: [s.diagnosis.length, s.diagnosis.length],
-    treatment: [countNecTreatment(s.treatment), countTotalTreatment(s.treatment)]
-  };
+  const totals = {};
+  for (const t of SECTIONS) totals[t.key] = [countNec(s, t.key), countTotal(s, t.key)];
   document.getElementById('tabs').innerHTML = SECTIONS.map(t => {
     const [cur, max] = totals[t.key];
     return `<button class="tab ${t.key === state.sec ? 'active' : ''}" data-k="${t.key}">${t.label} ${cur}/${max}</button>`;
@@ -333,17 +245,17 @@ function renderHistory() {
     const catItems = cat.subs.flatMap(sub => sub.items);
     const catNec = catItems.filter(isNec).length;
     const subsHtml = cat.subs.map(sub => {
-      const items = sub.items.filter(it => (!state.necOnly || isNec(it)) && matchText(it, state.q, [cat.category, sub.name, it.explain]));
+      const items = sub.items.filter(it => (!necFilterOn() || isNec(it)) && matchText(it, state.q, [cat.category, sub.name, it.explain]));
       if (!items.length) return '';
       const subNec = sub.items.filter(isNec).length;
-      return `<details class="group ${subNec ? 'has-nec' : ''}" ${state.q || state.necOnly ? 'open' : ''}>
+      return `<details class="group ${subNec ? 'has-nec' : ''}" ${state.q || necFilterOn() ? 'open' : ''}>
         <summary>${scentMark(subNec)}<span class="sec-h2">${esc(sub.name)}</span><span class="g-count">${items.length} 项 · 必要 ${items.filter(isNec).length}</span></summary>
         <div class="group-body">${items.map(g => histItemHTML(g)).join('')}</div>
       </details>`;
     }).filter(Boolean).join('');
     if (!subsHtml) continue;
     any = true;
-    html += `<details class="group ${catNec ? 'has-nec' : ''}" ${state.q || state.necOnly ? 'open' : ''}>
+    html += `<details class="group ${catNec ? 'has-nec' : ''}" ${state.q || necFilterOn() ? 'open' : ''}>
       <summary>${scentMark(catNec)}<span class="sec-h1">${esc(cat.category)}</span><span class="g-count">${catItems.length} 项 · 必要 ${catNec}</span></summary>
       <div class="group-body">${subsHtml}</div>
     </details>`;
@@ -352,7 +264,7 @@ function renderHistory() {
   return any ? html : empty();
 }
 function histItemHTML(g) {
-  return `<details class="item ${isNec(g) ? 'nec' : ''}" ${state.q || state.necOnly ? 'open' : ''}>
+  return `<details class="item ${isNec(g) ? 'nec' : ''}" ${state.q || necFilterOn() ? 'open' : ''}>
     <summary><span class="i-q">${esc(g.q)}</span>${isNec(g) ? '<span class="badge-nec">必要</span><span class="badge-score">' + scoreOf(g) + '分</span>' : ''}</summary>
     <div class="i-detail"><div class="kv reply"><span class="k">患者回复</span><span class="v">${esc(g.reply)}</span></div></div>
   </details>`;
@@ -362,7 +274,7 @@ function renderPhysicalNode(n, path, hidePos) {
   const p2 = path.concat(n.name);
   if (n.items) {
     const useHide = hidePos || n.kind === 'part';
-    const items = n.items.filter(it => (!state.necOnly || isNec(it)) && matchText(it, state.q, p2.concat(it.tool, it.position)));
+    const items = n.items.filter(it => (!necFilterOn() || isNec(it)) && matchText(it, state.q, p2.concat(it.tool, it.position)));
     if (!items.length) return '';
     const nec = n.items.filter(isNec).length;
     return `<details class="group ${nec ? 'has-nec' : ''}" ${state.q ? 'open' : ''}>
@@ -392,15 +304,7 @@ function renderPhysical() {
   return nodes ? `<div class="section">${nodes}</div>` : empty();
 }
 
-function auxTopLevel() {
-  // 化验单/报告单是冗余包装层：只保留其子节点作为一级（v34）
-  const out = [];
-  for (const n of getCase().sections.aux) {
-    if (n.name === '化验单' || n.name === '报告单') { if (n.children) out.push(...n.children); }
-    else out.push(n);
-  }
-  return out;
-}
+function auxTopLevelFromCase() { return auxTopLevel(getCase().sections.aux); }
 function collectAuxLeaves(nodes, path, grp, grpKey, out) {
   // v36 平铺：递归收集叶子，grp=最近父级名（组标题），grpKey=组 key 前缀
   for (const n of nodes) {
@@ -409,24 +313,35 @@ function collectAuxLeaves(nodes, path, grp, grpKey, out) {
     else out.push({ grp, grpKey, item: n, path: p2 });
   }
 }
+// 辅助分组标题必须是真 <button>：普通 div 只接 click，键盘用户永远打不开分组。
+// nec 只在答案模式传入，练习模式传 0，否则「含正确选项」的小圆点会把答案泄露给考生。
+function auxGroupToggle(title, n, nec, grpKey, gi, expanded) {
+  return `<button type="button" class="aux-sec-toggle" data-grp="${esc(grpKey)}" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="aux-grp-${gi}">`
+    + `${scentMark(nec)}<span class="aux-sec-title">${esc(title)}</span><span class="aux-sec-count">${n} 项</span></button>`;
+}
+
 function renderAux() {
   const leaves = [];
-  collectAuxLeaves(auxTopLevel(), [], '', '', leaves);
-  const filtered = leaves.filter(l => (!state.necOnly || l.item.necessary) && matchText(l.item, state.q, l.path.concat(l.item.abbreviation)));
+  collectAuxLeaves(auxTopLevelFromCase(), [], '', '', leaves);
+  const filtered = leaves.filter(l => (!necFilterOn() || l.item.necessary) && matchText(l.item, state.q, l.path.concat(l.item.abbreviation)));
   if (!filtered.length) return empty();
+  const expanded = state.auxExpanded[state.cur] || new Set();
   let html = '<div class="section aux-flat">';
-  let curGrp = null, curGrpKey = null;
+  let curGrp = null, curGrpKey = null, gi = 0, bodyOpen = false;
   for (const l of filtered) {
     if (l.grp !== curGrp || l.grpKey !== curGrpKey) {
-      curGrp = l.grp; curGrpKey = l.grpKey;
+      if (bodyOpen) { html += '</div>'; bodyOpen = false; }
+      curGrp = l.grp; curGrpKey = l.grpKey; gi++;
       const grpLeaves = filtered.filter(x => x.grpKey === curGrpKey);
       const n = grpLeaves.length;
       const nec = grpLeaves.filter(x => isNec(x.item)).length;  // v40 寻血标记：组内必要项数
-      const collapsed = !state.q && !(state.auxExpanded[state.cur] || new Set()).has(curGrpKey);  // v48 默认折叠，搜索时展开
-      html += `<div class="aux-sec-head ${collapsed ? 'collapsed' : ''}" data-grp="${esc(curGrpKey)}">${scentMark(nec)}${esc(curGrp)}<span class="aux-sec-count">${n} 项</span></div>`;
+      const collapsed = !state.q && !expanded.has(curGrpKey);   // v48 默认折叠，搜索时展开
+      html += `<div class="aux-sec-head ${collapsed ? 'collapsed' : ''}">${auxGroupToggle(curGrp, n, nec, curGrpKey, gi, !collapsed)}</div>`;
+      html += `<div class="aux-grp-body" id="aux-grp-${gi}">`;
+      bodyOpen = true;
     }
-    if (!state.q && !(state.auxExpanded[state.cur] || new Set()).has(l.grpKey)) continue;
-    const price = l.item.cost ? `<span class="price">￥${l.item.cost}</span>` : '';
+    if (!state.q && !expanded.has(l.grpKey)) continue;
+    const price = priceHTML(l.item.cost, '￥');
     html += `<details class="aux-row ${isNec(l.item) ? 'nec' : ''}" ${state.q ? 'open' : ''}>
       <summary><span class="ar-name">${esc(l.item.name)}${l.item.abbreviation ? ` <span class="attr">${esc(l.item.abbreviation)}</span>` : ''}</span>${price}${isNec(l.item) ? '<span class="badge-nec">必要</span>' : ''}</summary>
       <div class="i-detail">
@@ -437,6 +352,7 @@ function renderAux() {
       </div>
     </details>`;
   }
+  if (bodyOpen) html += '</div>';
   html += '</div>';
   return html;
 }
@@ -449,7 +365,7 @@ function renderTreatment() {
   const groups = getCase().sections.treatment
     .map(g => ({ ...g, items: g.items.filter(it => {
         const sceneOk = mode === 'answer' || (it.scenes || []).includes(scene);
-        return (!state.necOnly || isNec(it)) && sceneOk && matchText(it, state.q, [g.group]);
+        return (!necFilterOn() || isNec(it)) && sceneOk && matchText(it, state.q, [g.group]);
       }) }))
     .filter(g => g.items.length);
   if (!groups.length) return empty();
@@ -538,10 +454,11 @@ function getDiagMarks(dname) {
   if (!state.diagMarks[state.cur][dname]) state.diagMarks[state.cur][dname] = { support: new Set(), unsupport: new Set() };
   return state.diagMarks[state.cur][dname];
 }
+// 渲染期不得写业务状态：以前这里把没分类的诊断默认成「主要诊断」并落进 state，
+// 于是评分把站点的默认值当成了学生主动做出的分类。
 function getDiagClass(dname) {
-  state.diagClass[state.cur] = state.diagClass[state.cur] || {};
-  if (!state.diagClass[state.cur][dname]) state.diagClass[state.cur][dname] = '主要诊断';
-  return state.diagClass[state.cur][dname];
+  const m = state.diagClass[state.cur];
+  return (m && m[dname]) || '未分类';
 }
 
 // ================= 练习模式（点选交互） =================
@@ -557,10 +474,10 @@ function pCard(sec, item, path, hidePos) {
     else if (sec === 'treatment') layer2 = `<div class="p-reply">${item.attr ? esc(item.attr) : '（治疗措施）'}</div>`;
   }
   const badge = picked ? '<span class="b-picked">✓ 已采集</span>' : '';
-  const price = (sec === 'aux' && item.cost) ? `<span class="price">¥${item.cost}</span>` : '';
+  const price = (sec === 'aux') ? priceHTML(item.cost, '¥') : '';
   const l1 = sec === 'history' ? item.q : item.name;
   const extras = (sec === 'physical' && !hidePos) ? `${item.tool ? `<span class="attr">${esc(item.tool)}</span>` : ''}${item.position ? `<span class="attr">${esc(item.position)}</span>` : ''}` : (sec === 'treatment' && item.attr ? `<span class="attr">${esc(item.attr)}</span>` : '');
-  return `<button class="pcard ${picked ? 'picked' : ''}${pend ? ' pend' : ''}" data-sec="${sec}" data-key="${esc(key)}">
+  return `<button type="button" class="pcard ${picked ? 'picked' : ''}${pend ? ' pend' : ''}" data-sec="${sec}" data-key="${esc(key)}" aria-pressed="${picked ? 'true' : 'false'}">
     <span class="p-name">${pend ? '<span class="pend-ic"></span>' : ''}${esc(l1)}</span>
     ${extras}
     ${price}
@@ -583,12 +500,13 @@ function renderPracticeHistory() {
   let html = '<div class="section psec">';
   for (const cat of cats) {
     // 参考答案模式：按一级分类直接铺开（消掉冗余二级头）
-    const allItems = cat.subs.flatMap(sub => sub.items);
-    const items = allItems.filter(it => (!state.necOnly || it.necessary) && matchText(it, state.q, [cat.category, it.explain]));
+    // 但键必须带上二级小节，否则两个分类下的同名问题会共用一个勾选状态
+    const allItems = cat.subs.flatMap(sub => sub.items.map(it => ({ it, sub })));
+    const items = allItems.filter(x => (!necFilterOn() || x.it.necessary) && matchText(x.it, state.q, [cat.category, x.it.explain]));
     if (!items.length) continue;
     any = true;
     const head = `${esc(cat.category)}<span class="g-count">${items.length} 项</span>`;
-    const body = items.map(it => pCard('history', it, [cat.category])).join('');
+    const body = items.map(x => pCard('history', x.it, historyPath(cat, x.sub))).join('');
     html += pGrp(head, body, !!state.q, 'hist|' + cat.category);
   }
   html += '</div>';
@@ -600,7 +518,7 @@ function renderPracticePhysicalNode(n, path, hidePos) {
   const open = !!state.q;
   if (n.items) {
     const useHide = hidePos || n.kind === 'part';
-    const items = n.items.filter(it => (!state.necOnly || it.necessary) && matchText(it, state.q, p2.concat(it.tool, it.position)));
+    const items = n.items.filter(it => (!necFilterOn() || it.necessary) && matchText(it, state.q, p2.concat(it.tool, it.position)));
     if (!items.length) return '';
     const head = `${esc(n.name)}${n.kind === 'model' ? '<span class="g-sub">· 3D 人体模型</span>' : ''}<span class="g-count">${items.length} 项</span>`;
     const body = items.map(it => pCard('physical', it, p2, useHide)).join('');
@@ -621,35 +539,40 @@ function renderPracticePhysical() {
 
 function renderPracticeAux() {
   const leaves = [];
-  collectAuxLeaves(auxTopLevel(), [], '', '', leaves);
-  const filtered = leaves.filter(l => (!state.necOnly || l.item.necessary) && matchText(l.item, state.q, l.path.concat(l.item.abbreviation)));
+  collectAuxLeaves(auxTopLevelFromCase(), [], '', '', leaves);
+  const filtered = leaves.filter(l => (!necFilterOn() || l.item.necessary) && matchText(l.item, state.q, l.path.concat(l.item.abbreviation)));
   if (!filtered.length) return empty();
   const pend = auxPendingSet();
+  const expanded = state.auxExpanded[state.cur] || new Set();
   let html = '<div class="section psec aux-flat">';
-  let curGrp = null, curGrpKey = null;
+  let curGrp = null, curGrpKey = null, gi = 0, bodyOpen = false;
   for (const l of filtered) {
     if (l.grp !== curGrp || l.grpKey !== curGrpKey) {
-      curGrp = l.grp; curGrpKey = l.grpKey;
+      if (bodyOpen) { html += '</div>'; bodyOpen = false; }
+      curGrp = l.grp; curGrpKey = l.grpKey; gi++;
       const n = filtered.filter(x => x.grpKey === curGrpKey).length;
       const grpPend = filtered.filter(x => x.grpKey === curGrpKey && pend.has(keyOf('aux', x.item, x.path))).length;
       const grpAvail = filtered.filter(x => x.grpKey === curGrpKey && !isPicked('aux', keyOf('aux', x.item, x.path))).length;
       // v45 全选 toggle：组内全部未采集项都已待检测 → 显示「取消全选」；否则「全选」
       const grpAllPend = grpAvail > 0 && grpAvail === filtered.filter(x => x.grpKey === curGrpKey && !isPicked('aux', keyOf('aux', x.item, x.path)) && pend.has(keyOf('aux', x.item, x.path))).length;
-      const selBtn = grpAvail > 0 ? `<button class="aux-sel ${grpAllPend ? 'all' : ''}" data-grp="${esc(curGrpKey)}">${grpAllPend ? '取消全选' : '全选'}</button>` : '';
-      const runBtn = grpPend > 0 ? `<button class="aux-run" data-grp="${esc(curGrpKey)}">检测 ${grpPend} 项</button>` : '';
-      const collapsed = !state.q && !(state.auxExpanded[state.cur] || new Set()).has(curGrpKey);  // v48 默认折叠，搜索时展开
-      html += `<div class="aux-sec-head ${collapsed ? 'collapsed' : ''}" data-grp="${esc(curGrpKey)}">${esc(curGrp)}<span class="aux-sec-count">${n} 项</span>${selBtn}${runBtn}</div>`;
+      const selBtn = grpAvail > 0 ? `<button type="button" class="aux-sel ${grpAllPend ? 'all' : ''}" data-grp="${esc(curGrpKey)}" aria-pressed="${grpAllPend ? 'true' : 'false'}">${grpAllPend ? '取消全选' : '全选'}</button>` : '';
+      const runBtn = grpPend > 0 ? `<button type="button" class="aux-run" data-grp="${esc(curGrpKey)}">检测 ${grpPend} 项</button>` : '';
+      const collapsed = !state.q && !expanded.has(curGrpKey);  // v48 默认折叠，搜索时展开
+      html += `<div class="aux-sec-head ${collapsed ? 'collapsed' : ''}">${auxGroupToggle(curGrp, n, 0, curGrpKey, gi, !collapsed)}${selBtn}${runBtn}</div>`;
+      html += `<div class="aux-grp-body" id="aux-grp-${gi}">`;
+      bodyOpen = true;
     }
-    if (!state.q && !(state.auxExpanded[state.cur] || new Set()).has(l.grpKey)) continue;
+    if (!state.q && !expanded.has(l.grpKey)) continue;
     const key = keyOf('aux', l.item, l.path);
     const picked = isPicked('aux', key);
     const isPend = pend.has(key);
-    html += `<button class="aux-row ${picked ? 'picked' : ''} ${isPend ? 'pend' : ''}" data-sec="aux" data-key="${esc(key)}">
+    html += `<button type="button" class="aux-row ${picked ? 'picked' : ''} ${isPend ? 'pend' : ''}" data-sec="aux" data-key="${esc(key)}" aria-pressed="${isPend || picked ? 'true' : 'false'}">
       <span class="ar-name">${isPend ? '<span class="pend-ic"></span>' : ''}${esc(l.item.name)}${l.item.abbreviation ? ` <span class="attr">${esc(l.item.abbreviation)}</span>` : ''}</span>
-      ${l.item.cost ? `<span class="price">￥${l.item.cost}</span>` : ''}
+      ${priceHTML(l.item.cost, '￥')}
       ${picked ? '<span class="b-picked">✓ 已采集</span>' : ''}
     </button>`;
   }
+  if (bodyOpen) html += '</div>';
   html += '</div>';
   return html;
 }
@@ -670,7 +593,7 @@ function renderPracticeTreatment() {
   const scene = state.txScene[state.cur];
   if (!scene) return renderSceneGate();
   const groups = getCase().sections.treatment
-    .map(g => ({ ...g, items: g.items.filter(it => (!state.necOnly || it.necessary) && (it.scenes || []).includes(scene) && matchText(it, state.q, [g.group])) }))
+    .map(g => ({ ...g, items: g.items.filter(it => (!necFilterOn() || it.necessary) && (it.scenes || []).includes(scene) && matchText(it, state.q, [g.group])) }))
     .filter(g => g.items.length);
   if (!groups.length) return empty();
   const open = !!state.q;
@@ -779,18 +702,18 @@ function renderSection() {
   const openKeys = [...el.querySelectorAll('details.pgroup[open]')].map(d => d.dataset.grp).filter(Boolean);
   if (sec === 'history') {
     const body = mode === 'practice' ? renderPracticeHistory() : renderHistory();
-    el.innerHTML = renderLimitBar('history') + body;
+    el.innerHTML = lockBannerHTML() + renderLimitBar('history') + body;
   } else if (sec === 'physical') {
     const body = mode === 'practice' ? renderPracticePhysical() : renderPhysical();
-    el.innerHTML = renderLimitBar('physical') + body;
+    el.innerHTML = lockBannerHTML() + renderLimitBar('physical') + body;
   } else if (sec === 'aux') {
     const body = mode === 'practice' ? renderPracticeAux() : renderAux();
-    el.innerHTML = renderLimitBar('aux') + body;
+    el.innerHTML = lockBannerHTML() + renderLimitBar('aux') + body;
   } else if (sec === 'treatment') {
     const body = mode === 'practice' ? renderPracticeTreatment() : renderTreatment();
-    el.innerHTML = renderLimitBar('treatment') + body;
+    el.innerHTML = lockBannerHTML() + renderLimitBar('treatment') + body;
   } else if (sec === 'diagnosis') {
-    el.innerHTML = mode === 'practice' ? renderPracticeDiagnosis() : renderDiagnosisAnswer();
+    el.innerHTML = lockBannerHTML() + (mode === 'practice' ? renderPracticeDiagnosis() : renderDiagnosisAnswer());
     if (mode === 'practice') { renderDiagSuggestions(); bindDiagLabels(); }
     restoreOpenGroups(el, openKeys);
     return;
@@ -800,21 +723,12 @@ function renderSection() {
 // ---------- 限制进度条（病史/体格/辅助/治疗：项目数 + 辅助花费）----------
 // 官网真实语义：standard=标准线(绿) / reasonable=合理线(橙，超标准但不扣分) / >reasonable 起扣分(红)
 // max = 硬上限，也是进度条满格基准（reasonable = standard×1.5，max = standard×2）
-function limitStats(sec) {
-  const picked = (state.picked[state.cur] && state.picked[state.cur][sec]) || new Set();
-  if (sec === 'aux') {
-    // v44 口径修正：进度条「检查次数」= 检测动作次数（批量检测一次计 1），花费仍按项目 cost 累计
-    let cost = 0;
-    const walk = (n, path) => {
-      const p2 = path.concat(n.name);
-      if (n.children) n.children.forEach(c => walk(c, p2));
-      else if (isPicked('aux', keyOf('aux', n, p2))) cost += (n.cost || 0);
-    };
-    auxTopLevel().forEach(n => walk(n, []));
-    return { count: state.auxCheckCount[state.cur] || 0, cost };
-  }
-  return { count: picked.size };
-}
+// 评分引擎看的是「本病例的答卷」；投影逻辑在 js/domain/answer.js，与回归测试共用同一份。
+function answerView() { return caseAnswer(state, state.cur); }
+
+// 限额统计直接由评分引擎给出：页面进度条与实际扣分共用同一份数，
+// 以前两者各算一套，才会出现「进度条喊扣分、评分公式不看」的矛盾。
+function limitStats(sec) { return limitMetrics(getCase(), answerView(), sec); }
 function fmtNum(n) { return Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10); }
 function limitBarHTML(label, val, lim, isCost, unit) {
   if (!lim) return '';
@@ -825,15 +739,17 @@ function limitBarHTML(label, val, lim, isCost, unit) {
   const color = val <= std ? 'green' : (val <= reaV ? 'orange' : 'red');
   const u = isCost ? '' : (unit || ' 项');
   const remain = Math.max(0, Math.ceil(std - val));
+  const penFrac = color === 'red' ? excessFraction(val, lim, DEFAULT_RULES) : 0;
   const note = color === 'green'
     ? (remain > 0 ? `还差 ${fmtNum(remain)}${u} 到标准线 ${fmtNum(std)}（绿色达标区）` : `已达标；超过 ${fmtNum(reaV)}${u} 开始扣分`)
     : (color === 'orange'
       ? `已超标准线；≤ ${fmtNum(reaV)}${u} 仍不扣分`
-      : `已超过扣分线 ${fmtNum(reaV)}${u}，将扣分`);
+      : `已超过扣分线 ${fmtNum(reaV)}${u}，本模块按 ${Math.round((1 - penFrac) * 100)}% 计分`);
+  const shortTag = color === 'red' ? '超扣分线 · 已扣分' : (color === 'orange' ? '超标准线 · 未扣分' : '标准线内');
   const stdPct = Math.min(100, (std / max) * 100);
   const reaPct = Math.min(100, (reaV / max) * 100);
   return `<div class="limit-bar ${color}">
-    <div class="limit-head"><span class="limit-label">${esc(label)}</span><span class="limit-val">${fmtNum(val)}${u} · 标准 ${fmtNum(std)} / 扣分线 ${fmtNum(reaV)} / 上限 ${fmtNum(max)}</span></div>
+    <div class="limit-head"><span class="limit-label">${esc(label)}</span><span class="limit-note-short">${shortTag}</span><span class="limit-val">${fmtNum(val)}${u} · 标准 ${fmtNum(std)} / 扣分线 ${fmtNum(reaV)} / 上限 ${fmtNum(max)}</span></div>
     <div class="limit-track">
       <div class="limit-zone zone-g" style="left:0;width:${stdPct}%"></div>
       <div class="limit-zone zone-o" style="left:${stdPct}%;width:${Math.max(0, reaPct - stdPct)}%"></div>
@@ -846,18 +762,13 @@ function limitBarHTML(label, val, lim, isCost, unit) {
   </div>`;
 }
 function renderLimitBar(sec) {
-  const L = getCase().limits;
-  if (!L) return '';
+  const ms = limitStats(sec);
+  if (!ms.length) return '';
   const LB = { history: '病史采集 · 提问数', physical: '体格检查 · 检查项目数', aux: '辅助检查 · 检查次数', treatment: '治疗 · 措施数' };
-  if (sec === 'aux' && L.aux) {
-    const s = limitStats('aux');
-    return `<div class="limit-wrap">${limitBarHTML(LB.aux, s.count, L.aux, false, ' 次')}${limitBarHTML('辅助检查 · 花费', s.cost, { standard: L.aux.costStandard, reasonable: L.aux.costReasonable, max: L.aux.costMax }, true)}</div>`;
-  }
-  if (L[sec] && LB[sec]) {
-    const s = limitStats(sec);
-    return `<div class="limit-wrap">${limitBarHTML(LB[sec], s.count, L[sec])}</div>`;
-  }
-  return '';
+  return `<div class="limit-wrap">${ms.map(m => (m.metric === 'cost'
+    ? limitBarHTML('辅助检查 · 花费', m.value, m.lim, true)
+    : limitBarHTML(LB[sec] || m.label, m.value, m.lim, false, sec === 'aux' ? ' 次' : ' 项')
+  )).join('')}</div>`;
 }
 function resetMainScroll() {
   const main = document.querySelector('.main');
@@ -894,6 +805,7 @@ function rpIsOpen() {
 function syncRpBtn() {
   const btn = document.getElementById('rpToggle');
   if (!btn) return;
+  btn.setAttribute('aria-expanded', String(rpIsOpen()));
   if (rpIsOpen()) { btn.textContent = '✕ 收起'; return; }
   // 练习模式且本题尚未提交：悬浮球文案提示「可在此提交」
   if (state.mode === 'practice' && !state.scores[state.cur]) {
@@ -946,10 +858,31 @@ function bindDesktopDrawer() {
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && sbIsOpen() && !isMobileLayout() && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) { setSbOpen(false); setSbMasked(false); } });
   window.addEventListener('resize', () => { if (isMobileLayout() && sbIsOpen()) { setSbOpen(false); setSbMasked(false); } });
 }
+let rpLastFocus = null;
 function setRpOpen(open) {
-  document.body.classList.toggle('rp-open', !!open);
   const col = document.querySelector('.report-col');
-  if (col && open) col.scrollTop = 0;
+  const wasOpen = rpIsOpen();
+  document.body.classList.toggle('rp-open', !!open);
+  if (col) {
+    if (open) {
+      col.scrollTop = 0;
+      col.inert = false;
+      if (!wasOpen && isMobileLayout()) {
+        rpLastFocus = document.activeElement;
+        const f = col.querySelector('button:not([disabled]), [href], input, select, textarea, [tabindex="-1"]');
+        if (f) f.focus({ preventScroll: true });
+        else { col.tabIndex = -1; col.focus({ preventScroll: true }); }
+      }
+    } else {
+      // 抽屉只是 translateY 出屏，并不脱离 Tab 顺序；关闭时必须 inert 掉，
+      // 否则键盘用户会焦点落到一个看不见的提交按钮上。桌面端报告栏常驻，不能 inert。
+      col.inert = isMobileLayout();
+      if (wasOpen && rpLastFocus && document.body.contains(rpLastFocus)) {
+        rpLastFocus.focus({ preventScroll: true });
+      }
+      rpLastFocus = null;
+    }
+  }
   syncRpBtn();
 }
 function bindMobileDrawer() {
@@ -991,70 +924,22 @@ function extractCheckRecord(fullText) {
 //   ext 是"字段就地延长"，真实增量只是后缀 suf；重放时后缀只挂到【已点中的基行】上，
 //   若基行未被点中则只显示后缀(去前导标点)，绝不把未点中的基内容带出 -> 彻底消除"意外的多余增量"。
 // 输出只可能包含被点步骤贡献的内容，绝不混入未点步骤。
-const _CR_SEP = ['，', '、', '；', '：', ':', ' '];
 const _hrMapCache = {};
 function _hrQMap(arr) {
   let m = _hrMapCache[state.cur];
   if (!m) { m = {}; arr.forEach((s, i) => { m[norm(s.q)] = i; }); _hrMapCache[state.cur] = m; }
   return m;
 }
-function _hrCleanSuf(s) { return (s || '').replace(/^[,，、；;:： ]+/, ''); }
-// 重放 ops 到 working（与 build_history_records.js 的 replayOps 完全一致）
-function _hrReplayOps(working, ops) {
-  for (const op of (ops || [])) {
-    if (op.t === 'add') {
-      let replaced = false;
-      for (let k = 0; k < working.length; k++) {
-        const X = working[k];
-        if (!_CR_SECTIONS.has(X) && op.line.startsWith(X) && op.line.length > X.length) {
-          const s = op.line.slice(X.length);
-          if (_CR_SEP.some(x => s.startsWith(x))) { working[k] = op.line; replaced = true; break; }
-        }
-      }
-      if (replaced) continue;
-      if (op.after != null) { const a = working.indexOf(op.after); if (a >= 0) { working.splice(a + 1, 0, op.line); continue; } }
-      working.push(op.line);
-    } else if (op.t === 'ext') {
-      const full = op.base + op.suf;
-      let hit = -1, mode = 'full';
-      // 1) 整基行命中：working 中已有 op.base 整行，或已有"op.base 的前缀段"
-      for (let k = 0; k < working.length; k++) {
-        const X = working[k];
-        if (X === op.base || (!_CR_SECTIONS.has(X) && op.base.startsWith(X) && op.base.length > X.length && _CR_SEP.some(s => op.base.slice(X.length).startsWith(s)))) { hit = k; mode = 'full'; break; }
-      }
-      // 2) 尾段命中：op.base 的"最后一段(末分隔符之后)"恰好是 working 中某行 X -> 把 suf 续到 X 之后（跳过未点中间步骤也能合并，且不泄露）
-      if (hit < 0) {
-        for (let k = 0; k < working.length; k++) {
-          const X = working[k];
-          if (_CR_SECTIONS.has(X) || X.length < 2) continue;
-          const i = op.base.lastIndexOf(X);
-          if (i > 0 && i + X.length === op.base.length && _CR_SEP.includes(op.base[i - 1])) { hit = k; mode = 'tail'; break; }
-        }
-      }
-      if (hit >= 0) { working[hit] = mode === 'full' ? full : working[hit] + op.suf; }
-      else {
-        const cs = _hrCleanSuf(op.suf);
-        if (op.after != null) { const a = working.indexOf(op.after); if (a >= 0) { working.splice(a + 1, 0, cs); continue; } }
-        working.push(cs); // 基行未点中：只显示新增后缀，绝不泄露基内容
-      }
-    } else if (op.t === 'del') {
-      const k = working.indexOf(op.line);
-      if (k >= 0) working.splice(k, 1);
-    }
-  }
-  return working;
-}
+// 重放算法本体在 js/domain/history-replay.js：构建脚本的发布前自检用的是同一份实现。
 function historyRecordText() {
   const arr = (state.histRec && state.histRec[state.cur]) || [];
   if (!arr.length) return null;
   const map = _hrQMap(arr);
   const items = collectPicked('history').filter(p => p.nec);
   if (!items.length) return null;
-  const idxs = [...new Set(items.map(p => map[norm(p.l1)]).filter(i => i != null))].sort((a, b) => a - b);
+  const idxs = [...new Set(items.map(p => map[norm(p.l1)]).filter(i => i != null))];
   if (!idxs.length) return null;
-  const working = [];
-  for (const idx of idxs) _hrReplayOps(working, arr[idx].ops);
-  const out = working.join('\n');
+  const out = replayPicked(arr, idxs).join('\n');
   return out || null;
 }
 
@@ -1062,19 +947,24 @@ function historyRecordText() {
 function historyRecordFullText() {
   const arr = (state.histRec && state.histRec[state.cur]) || [];
   if (!arr.length) return null;
-  const working = [];
-  for (const step of arr) _hrReplayOps(working, step.ops);
-  const out = working.join('\n');
+  const out = replayAll(arr).join('\n');
   return out || null;
 }
 
-const _CR_SECTIONS = new Set(['基本常识', '现病史', '既往史', '个人史', '家族史', '月经婚育史', '妇产科问题', '小儿问题', '目前一般状况']);
+// 重放数据来源：精确逐步 vs 终态比例还原（估算）。估算轨迹只可演示，不等于真实采集过程。
+function historyRecordSourceNote() {
+  const arr = (state.histRec && state.histRec[state.cur]) || [];
+  if (!arr.length) return '';
+  const est = arr.filter(s => s.sourceType === 'estimated').length;
+  if (!est) return '';
+  return `<div class="rp-note">其中 ${est}/${arr.length} 步为终态比例还原的估算轨迹，仅用于演示，不代表真实采集顺序。</div>`;
+}
 // 将系统「检查记录」文本渲染为带层级的小结（section / sub / key:value / value）
 function formatCheckRecord(rec) {
   const body = (rec || '').replace(/^检查记录\s*\n/, '');
   return body.trim().split('\n').map(ln => {
     const t = ln.trim();
-    if (_CR_SECTIONS.has(t)) return `<div class="cr-sec">${esc(t)}</div>`;
+    if (CR_SECTIONS.has(t)) return `<div class="cr-sec">${esc(t)}</div>`;
     if (ln.includes('：')) { const i = ln.indexOf('：'); return `<div class="cr-kv"><span class="cr-k">${esc(ln.slice(0, i))}</span>${esc(ln.slice(i + 1))}</div>`; }
     if (t.length <= 10 && !/[？?。.！!，,、]/.test(t)) return `<div class="cr-sub">${esc(t)}</div>`;
     return `<div class="cr-val">${esc(ln)}</div>`;
@@ -1082,67 +972,51 @@ function formatCheckRecord(rec) {
 }
 
 // ================= 评分（百分制，权重：病史10% · 体格10% · 辅助70% · 诊断10% · 治疗0%）=================
-function moduleRate(sec) {
-  const c = getCase();
-  let necTotal = 0, pickedScore = 0;
-  const add = (item, path, sc) => {
-    const k = keyOf(sec, item, path);
-    necTotal += sc;
-    if (isPicked(sec, k) && item.necessary) pickedScore += sc;
-  };
-  if (sec === 'history') c.sections.history.forEach(cat => cat.subs.forEach(sub => sub.items.forEach(it => add(it, [cat.category], it.score || 0))));
-  else if (sec === 'physical') {
-    const w = (n, path) => { const p2 = path.concat(n.name); if (n.items) n.items.forEach(it => add(it, p2, it.score || 0)); else if (n.subs) n.subs.forEach(s => w(s, p2)); };
-    c.sections.physical.forEach(n => w(n, []));
-  } else if (sec === 'aux') {
-    const w = (n, path) => { const p2 = path.concat(n.name); if (n.children) n.children.forEach(c2 => w(c2, p2)); else add(n, p2, n.score || 0); };
-    auxTopLevel().forEach(n => w(n, []));
-  } else if (sec === 'treatment') c.sections.treatment.forEach(g => g.items.forEach(it => add(it, [g.group], it.score || 0)));
-  return necTotal ? pickedScore / necTotal : 1;
-}
-function diagnosisRate() {
-  const c = getCase();
-  const answers = c.sections.diagnosis;
-  if (!answers.length) return 1;
-  const clsMap = state.diagClass[state.cur] || {};
-  const userNames = Object.keys(clsMap);
-  const matchAnswer = (a) => userNames.find(un => {
-    const unN = norm(un);
-    if (unN === norm(a.name)) return true;
-    const syn = (a.synonyms || '').split(/[，,、]/).map(x => norm(x));
-    return syn.includes(unN);
-  });
-  const totalScore = answers.reduce((s, a) => s + (a.score || 1), 0);
-  const hitScore = answers.reduce((s, a) => {
-    const un = matchAnswer(a);
-    if (!un) return s;
-    return norm(clsMap[un]) === norm(a.cls) ? s + (a.score || 1) : s;
-  }, 0);
-  return totalScore ? hitScore / totalScore : 1;
-}
+// 计算全部在 js/domain/scoring.js：这里只负责把「当前病例 + 当前答卷 + 规则表」递进去，
+// 因此同一份评分逻辑可以在不启动网页的情况下被 node:test 验证。
 function computeScore() {
-  const breakdown = [
-    { key: 'history', label: '病史', weight: '10%', rate: moduleRate('history') },
-    { key: 'physical', label: '体格', weight: '10%', rate: moduleRate('physical') },
-    { key: 'aux', label: '辅助', weight: '70%', rate: moduleRate('aux') },
-    { key: 'diagnosis', label: '诊断', weight: '10%', rate: diagnosisRate() },
-    { key: 'treatment', label: '治疗', weight: '0%', rate: moduleRate('treatment') },
-  ];
-  const total = breakdown.reduce((s, b) => s + b.rate * parseFloat(b.weight) / 100, 0) * 100;
-  return { total, breakdown };
+  return domainComputeScore(getCase(), answerView(), DEFAULT_RULES);
 }
 
 // ================= 提交区 + 评分卡 =================
+function penaltyLines(pens) {
+  if (!pens || !pens.length) return '';
+  return `<div class="score-pen">
+    <div class="sp-title">扣分明细</div>
+    ${pens.map(p => `<div class="sp-row"><span>${esc(MODULE_LABEL[p.sec] || p.sec)} · ${esc(p.label)}</span><b>${fmtNum(p.value)}</b><span>扣分线 ${p.to == null ? '—' : fmtNum(p.from)}</span><span class="sp-ded">${p.binding ? `−${Math.abs(p.points).toFixed(1)} 分` : '与更重的一条同取，未叠加'}</span></div>`).join('')}
+  </div>`;
+}
+
+function noteLines(notes) {
+  if (!notes) return '';
+  const items = [];
+  if (notes.unclassifiedDiagnoses && notes.unclassifiedDiagnoses.length) {
+    items.push(`未分类的诊断（按「未分类」计分）：${notes.unclassifiedDiagnoses.join('、')}`);
+  }
+  if (notes.invalidDiagnoses && notes.invalidDiagnoses.length) {
+    items.push(`本病例标准答案中没有的诊断：${notes.invalidDiagnoses.join('、')}`);
+  }
+  if (notes.evidence && notes.evidence.marked) {
+    items.push(`证据判读：${notes.evidence.correct}/${notes.evidence.marked} 与标准依据树一致（${Math.round(notes.evidence.accuracy * 100)}%，当前不计入总分）`);
+  }
+  if (!items.length) return '';
+  return `<div class="score-notes">${items.map(t => `<div>· ${esc(t)}</div>`).join('')}</div>`;
+}
+
 function renderSubmitArea() {
   const cur = state.cur;
   const sc = state.scores && state.scores[cur];
   if (sc) {
-    const rows = sc.breakdown.map(b => {
-      const pct = Math.round(b.rate * 100);
+    const rows = (sc.breakdown || []).map(b => {
+      const pct = Math.round((b.rate == null ? 0 : b.rate) * 100);
+      const cov = b.coverage == null ? null : Math.round(b.coverage * 100);
+      const pen = b.penalty ? `<i class="sb-pen">超额扣 ${Math.round(b.penalty * 100)}%</i>` : '';
+      const pts = b.points == null ? '' : `<span class="sb-pts">${b.points.toFixed(1)} 分</span>`;
       return `<div class="sb-row">
-        <span class="sb-name">${esc(b.label)} <i>${esc(b.weight)}</i></span>
-        <span class="sb-val">${pct}%</span>
+        <span class="sb-name">${esc(b.label)} <i>${esc(b.weight)}</i>${pen}</span>
+        <span class="sb-val">${cov == null || cov === pct ? '' : `覆盖 ${cov}% → `}${pct}%</span>
         <span class="sb-bar"><span class="sb-fill" style="width:${pct}%"></span></span>
+        ${pts}
       </div>`;
     }).join('');
     return `<div class="submit-area submitted">
@@ -1151,13 +1025,25 @@ function renderSubmitArea() {
         <div class="score-total">${sc.total.toFixed(1)}<span class="score-unit">分 / 100</span></div>
         <div class="score-weights">权重：病史10% · 体格10% · 辅助70% · 诊断10% · 治疗0%</div>
         <div class="score-break">${rows}</div>
+        ${penaltyLines(sc.penalties)}
+        ${noteLines(sc.notes)}
       </div>
       <button class="btn-reset-practice" data-reset="${cur}">重新练习本病例</button>
     </div>`;
   }
+  const live = computeScore();
+  const livePens = live.penalties.length
+    ? `<div class="score-preview-pen">当前已触发 ${live.penalties.length} 条超额扣分：${esc(live.penalties.map(p => `${p.label} ${fmtNum(p.value)}`).join('、'))}</div>`
+    : '';
   return `<div class="submit-area">
+    <div class="score-preview">
+      <div class="sp-head">当前预估</div>
+      <div class="sp-total">${live.total.toFixed(1)}<span class="score-unit">分</span></div>
+      <div class="sp-note">按已采集项实时计算，含超额扣分；提交后锁定并计入历史。</div>
+      ${livePens}
+    </div>
     <button class="btn-submit" id="btnSubmit" data-cur="${cur}">提交本病例答卷</button>
-    <div class="submit-hint">提交后按权重生成百分制评分（答题进度已本地保存，刷新不丢）</div>
+    <div class="submit-hint">提交后按权重生成百分制评分并锁定答卷（答题进度已本地保存，刷新不丢）</div>
   </div>`;
 }
 
@@ -1181,7 +1067,7 @@ function renderReportInner() {
     if (sec === 'history') {
       const full = historyRecordFullText();
       body = full
-        ? `<div class="rp-records-label">系统检查记录（完整版）</div><div class="rp-checkrecord">${formatCheckRecord(full)}</div>`
+        ? `<div class="rp-records-label">系统检查记录（完整版）</div><div class="rp-checkrecord">${formatCheckRecord(full)}</div>${historyRecordSourceNote()}`
         : reportBlock('history');
     } else if (sec === 'physical' || sec === 'aux') {
       body = renderAnswerResults(sec);
@@ -1292,7 +1178,7 @@ function renderDiagEvidencePanel() {
   html += `</div>`;
   return html;
 }
-function empty() { return `<div class="empty">没有匹配的内容${state.necOnly ? '（已筛选“必要项”）' : ''}。</div>`; }
+function empty() { return `<div class="empty">没有匹配的内容${necFilterOn() ? '（已筛选“必要项”）' : ''}。</div>`; }
 
 // 练习模式：疾病一级标题下方「已选支持/不支持」预览（参照答案模式证据样式）
 function renderDiagPreview(dname) {
@@ -1333,16 +1219,21 @@ function bindSectionClicks() {
   // 委托监听绑在 .layout（同时包含 #section 与 #reportPanel），否则右栏按钮点不到
   document.querySelector('.layout').addEventListener('click', e => {
     // v48 折叠（默认全折叠）：练习/答案模式都可用（放在模式闸门前），点击组标题切换展开集合
-    const grpHead = e.target.closest('.aux-sec-head');
-    if (grpHead && !e.target.closest('.aux-run') && !e.target.closest('.aux-sel')) {
+    const grpHead = e.target.closest('.aux-sec-toggle');
+    if (grpHead) {
       const gk = grpHead.dataset.grp;
       state.auxExpanded[state.cur] = state.auxExpanded[state.cur] || new Set();
       if (state.auxExpanded[state.cur].has(gk)) state.auxExpanded[state.cur].delete(gk);
       else state.auxExpanded[state.cur].add(gk);
       renderSection();
+      // 整块重渲染会把焦点连同旧按钮一起丢掉，必须还给新的组标题
+      const again = document.querySelector(`.aux-sec-toggle[data-grp="${CSS.escape(gk)}"]`);
+      if (again) again.focus({ preventScroll: true });
       return;
     }
     if (state.mode !== 'practice') return;
+    // 已提交 = 答卷锁定：任何修改作答的点击都只闪烁提示，不动状态
+    if (answerLocked() && e.target.closest('.pcard, .aux-row, .aux-run, .aux-sel, .ev-label, .cls-btn, .scene-btn')) { flashLocked(); return; }
     const arow = e.target.closest('.aux-row');
     if (arow && arow.dataset.sec === 'aux') {
       // v36 平铺行：未采集项进入「待检测」（可多选/取消），组标题「检测 N 项」批量采集
@@ -1375,7 +1266,7 @@ function bindSectionClicks() {
       const grp = selAll.dataset.grp;
       const pend = auxPendingSet();
       const leaves = [];
-      collectAuxLeaves(auxTopLevel(), [], '', '', leaves);
+      collectAuxLeaves(auxTopLevelFromCase(), [], '', '', leaves);
       const grpLeaves = leaves.filter(l => l.grpKey === grp && !isPicked('aux', keyOf('aux', l.item, l.path)));
       const allPend = grpLeaves.length > 0 && grpLeaves.every(l => pend.has(keyOf('aux', l.item, l.path)));
       for (const l of grpLeaves) {
@@ -1430,6 +1321,7 @@ function bindSectionClicks() {
       const d = cls.dataset.d, c = cls.dataset.cls;
       state.diagClass[state.cur] = state.diagClass[state.cur] || {};
       state.diagClass[state.cur][d] = c;
+      saveState();   // 分类会直接影响评分，改了就必须立刻落盘
       renderSection();
       renderReport();
       return;
@@ -1444,15 +1336,24 @@ function bindSectionClicks() {
     }
     const sub = e.target.closest('.btn-submit');
     if (sub) {
-      if (confirm('确定提交本病例答卷？\n提交后将按权重计算百分制评分（病史10% · 体格10% · 辅助70% · 诊断10% · 治疗0%）。\n答题进度已本地保存，可随时「重新练习」。')) {
-        const r = computeScore();
+      const r = computeScore();
+      const pen = r.penalties.length
+        ? '\n已触发扣分：' + r.penalties.map(p => `${p.label} ${fmtNum(p.value)}（扣分线 ${fmtNum(p.from)}）`).join('、')
+        : '';
+      const warn = r.notes.unclassifiedDiagnoses.length
+        ? `\n注意：${r.notes.unclassifiedDiagnoses.length} 个诊断尚未分类，将按「未分类」计分。`
+        : '';
+      if (confirm('确定提交本病例答卷？\n提交后将按权重计算百分制评分（病史10% · 体格10% · 辅助70% · 诊断10% · 治疗0%），并锁定答卷——提交后再点选不会改变状态或评分，需「重新练习」才能修改。' + pen + warn)) {
         state.scores = state.scores || {};
         state.scores[state.cur] = {
           total: r.total,
-          breakdown: r.breakdown.map(b => ({ label: b.label, weight: b.weight, rate: b.rate })),
+          breakdown: r.breakdown,
+          penalties: r.penalties,
+          notes: r.notes,
           ts: Date.now(),
         };
         saveState();
+        renderSection();   // 锁定横幅要立刻出现在练习区
         renderReport();
         renderRpHint();
       }
@@ -1491,6 +1392,12 @@ function setMode(mode) {
   document.getElementById('btnAnswer').setAttribute('aria-pressed', String(mode === 'answer'));
   const necEl = document.getElementById('necOnlyWrap');
   if (necEl) necEl.style.display = mode === 'practice' ? 'none' : '';
+  // 「只看必要项」只属于答案模式；切回来必须清掉，否则练习列表会被一个看不见的筛选砍短
+  if (mode !== 'answer') {
+    state.necOnly = false;
+    const cb = document.getElementById('necOnly');
+    if (cb) cb.checked = false;
+  }
   setRpOpen(false);
   renderSidebar(); renderHead(); renderTabs(); renderSection(); renderReport();
   renderRpHint();
@@ -1498,32 +1405,64 @@ function setMode(mode) {
 }
 
 // ================= 启动 =================
-function boot() {
-  Promise.all([
-    fetch('data/cases.json').then(r => r.json()),
-    fetch('data/diaglib.json').then(r => r.json()),
-    fetch('data/history_records.json').then(r => r.json()).catch(() => ({})),
-  ]).then(([cases, diaglib, histRec]) => {
-    state.cases = cases; state.diaglib = diaglib; state.histRec = histRec || {};
-    loadState();
-    renderSidebar(); renderCase();
-    setMode('practice');
+function loadErrorHTML(err) {
+  const kind = err && err.__loadKind ? err.__loadKind : LOAD_ERROR.NETWORK_ERROR;
+  const problems = err && err.__problems ? err.__problems.map(p => `<li>${esc(p.msg)}</li>`).join('') : '';
+  return `<div class="empty load-error">
+    <div class="le-kind">[${esc(kind)}]</div>
+    <div class="le-msg">${esc(err && err.message ? err.message : String(err))}</div>
+    <div class="le-help">${esc(LOAD_HELP[kind] || '')}</div>
+    ${problems ? `<ul class="le-list">${problems}</ul>` : ''}
+  </div>`;
+}
 
-    document.getElementById('search').oninput = e => { state.q = e.target.value.trim(); renderSection(); };
-    document.getElementById('necOnly').onchange = e => { state.necOnly = e.target.checked; renderSection(); };
-    document.getElementById('btnPractice').onclick = () => setMode('practice');
-    document.getElementById('btnAnswer').onclick = () => setMode('answer');
+function startApp() {
+  renderSidebar(); renderCase();
+  setMode('practice');
 
-    bindSectionClicks();
-    bindMobileDrawer();
+  document.getElementById('search').oninput = e => { state.q = e.target.value.trim(); renderSection(); };
+  document.getElementById('necOnly').onchange = e => { state.necOnly = e.target.checked; renderSection(); };
+  document.getElementById('btnPractice').onclick = () => setMode('practice');
+  document.getElementById('btnAnswer').onclick = () => setMode('answer');
+
+  bindSectionClicks();
+  bindMobileDrawer();
   bindDesktopDrawer();
   setSbOpen(true, false);  // v50 初始展开（默认状态，F7 不劫持启动焦点）
 
-    document.getElementById('section').addEventListener('input', e => {
-      if (e.target.id === 'diagSearch') { state.diagQ = e.target.value.trim(); renderDiagSuggestions(); }
-    });
-  }).catch(err => {
-    document.getElementById('section').innerHTML = `<div class="empty">加载数据失败：${esc(err.message)}<br/>请通过本地服务器（http://）打开本页面，勿用 file:// 直接双击。</div>`;
+  document.getElementById('section').addEventListener('input', e => {
+    if (e.target.id === 'diagSearch') { state.diagQ = e.target.value.trim(); renderDiagSuggestions(); }
   });
+}
+
+async function boot() {
+  const el = document.getElementById('section');
+  el.innerHTML = '<div class="empty">正在载入病例数据…</div>';
+  try {
+    const [cases, diaglib] = await Promise.all([
+      loadJson('data/cases.json', { validator: validateCases }),
+      loadJson('data/diaglib.json', {
+        validator: d => (Array.isArray(d) ? [] : [{ level: 'error', code: 'NOT_ARRAY', msg: 'diaglib.json 顶层不是数组' }]),
+      }),
+    ]);
+    let histRec = {};
+    try {
+      histRec = await loadJson('data/history_records.json', { required: false });
+    } catch (e) {
+      el.innerHTML = loadErrorHTML(e) + el.innerHTML;  // 可选文件缺失也要说清缺的是哪个
+      histRec = {};
+    }
+    state.cases = cases; state.diaglib = diaglib; state.histRec = histRec || {};
+    loadState();
+    startApp();
+    if (state.storageNotice) {
+      document.getElementById('reportPanel').insertAdjacentHTML('afterbegin',
+        `<div class="rp-note" role="status">本地进度已按新版本格式读取：${esc(state.storageNotice)}<button type="button" class="rp-note-x" id="storageNoticeX" aria-label="关闭">×</button></div>`);
+      const x = document.getElementById('storageNoticeX');
+      if (x) x.onclick = () => { state.storageNotice = ''; x.parentElement.remove(); };
+    }
+  } catch (err) {
+    el.innerHTML = loadErrorHTML(err);
+  }
 }
 boot();

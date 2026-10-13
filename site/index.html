@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0d9488" />
   <title>临床思维训练 · 答案对照站</title>
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="assets/style.css?v=53" />
+  <link rel="stylesheet" href="assets/style.css?v=54" />
 </head>
 <body class="sb-open">  <!-- v50.1 初始展开态（防 FOUC 布局跳变） -->
   <header class="topbar">
@@ -19,9 +19,9 @@
       </div>
     </div>
     <div class="topbar-actions">
-      <div class="mode-switch">
-        <button id="btnPractice" class="mode-btn">练习模式</button>
-        <button id="btnAnswer" class="mode-btn">答案模式</button>
+      <div class="mode-switch" role="group" aria-label="模式切换">
+        <button id="btnPractice" class="mode-btn" type="button" aria-pressed="true">练习模式</button>
+        <button id="btnAnswer" class="mode-btn" type="button" aria-pressed="false">答案模式</button>
       </div>
       <div class="search-wrap">
         <span class="search-icon">🔍</span>
@@ -54,15 +54,15 @@
       </section>
     </main>
 
-    <aside class="report-col">
+    <aside id="reportCol" class="report-col" aria-label="报告面板">
       <div id="reportPanel" class="report-panel"></div>
     </aside>
   </div>
 
   <div id="sbMask"></div>
   <div id="rpMask"></div>
-  <button id="rpToggle" type="button">📋 检查记录</button>
+  <button id="rpToggle" type="button" aria-controls="reportCol" aria-expanded="false">📋 检查记录</button>
 
-  <script src="assets/app.js?v=53"></script>
+  <script type="module" src="assets/app.js?v=54"></script>
 </body>
 </html>
