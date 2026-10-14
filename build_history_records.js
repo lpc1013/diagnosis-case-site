@@ -18,9 +18,9 @@ const ROOT = __dirname;
 const RECON = path.join(ROOT, 'recon');
 const OUT = path.join(ROOT, 'site', 'data', 'history_records.json');
 
-// 重放算法与前端共用同一份实现（site/assets/js/domain/history-replay.js）。
+// 问诊时间序列引擎与前端共用同一份实现（site/assets/js/domain/interview-engine.js）。
 // 两边各抄一份的后果是：构建自检全绿、页面重放出来的却另一套内容。
-const hr = require('./site/assets/js/domain/history-replay.js');
+const hr = require('./site/assets/js/domain/interview-engine.js');
 const _CR_SECTIONS = hr.CR_SECTIONS;
 const _CR_SEP = hr.CR_SEP;
 const cleanSuf = hr.cleanSuf;
@@ -80,7 +80,7 @@ function diffOps(oldRec, newRec) {
   return ops;
 }
 
-// replayOps / replayPicked 来自 js/domain/history-replay.js（前端用的是同一份）
+// replayOps / replayPicked 来自 js/domain/interview-engine.js（前端用的是同一份）
 
 const reconFiles = {
   '0': 'incr_c0_呕血068.json',

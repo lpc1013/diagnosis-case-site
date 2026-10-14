@@ -5,7 +5,8 @@
   "description": "诊断学临床思维训练 · 答案对照与模拟练习站（零依赖）",
   "scripts": {
     "start": "node site/serve.js",
-    "test": "node --test \"tests/**/*.test.js\""
+    "test": "node --test \"tests/**/*.test.js\"",
+    "test:e2e": "node tools/qa_run.js"
   },
   "engines": { "node": ">=22.12" }
 }

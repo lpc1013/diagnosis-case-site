@@ -101,6 +101,22 @@ test('没有检测次数记录时按已采集辅助项数兜底', () => {
   assert.strictEqual(app.auxCheckCount[0], 1);
 });
 
+test('治疗场景落盘：刷新后已采集的治疗项不会被场景闸门藏起来', () => {
+  const c = tinyCase();
+  const app = emptyApp();
+  app.txScene[0] = '急诊';
+  const out = serialize(app);
+  assert.strictEqual(out.txScene[0], '急诊', 'serialize 里没有 txScene，刷新即丢');
+  assert.strictEqual(deserialize(out, [c]).app.txScene[0], '急诊');
+});
+
+test('txScene 只认非空字符串：脏值不进内存，旧存档缺这个字段也不报错', () => {
+  const c = tinyCase();
+  const { app } = deserialize({ v: 2, picked: {}, txScene: { 0: '门诊', 1: 42, 2: '', 3: null } }, [c]);
+  assert.deepStrictEqual(app.txScene, { 0: '门诊' });
+  assert.deepStrictEqual(deserialize({ v: 2, picked: {} }, [c]).app.txScene, {}, '新增可选字段：旧存档读不到就当未选场景');
+});
+
 test('loadFrom 优先新版本键，仅新版本缺失时才读旧键；保存后清掉旧键', () => {
   const c = tinyCase();
   const legacyStore = memStorage({ wb_clinthink_v1: JSON.stringify({ picked: { 0: { history: ['h|呕血?'] } } }) });

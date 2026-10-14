@@ -3,7 +3,8 @@
 import { norm, keyOf, caseItems, countNec, countTotal, necKeys, auxTopLevel, historyPath, safeCost } from './js/domain/case.js';
 import { caseAnswer } from './js/domain/answer.js';
 import { computeScore as domainComputeScore, DEFAULT_RULES, BUILTIN_RULES_VERSION, normalizeRules, rulesDigest, formatWeights, limitMetrics, excessFraction, MODULE_LABEL } from './js/domain/scoring.js';
-import { replayPicked, replayAll, CR_SECTIONS } from './js/domain/history-replay.js';
+import { replayPicked, replayAll, CR_SECTIONS, stepIdxsForQuestions, interviewPath } from './js/domain/interview-engine.js';
+import { buildReasoning, hypothesisTrace } from './js/domain/reasoning.js';
 import { loadJson, validateCases, validateRules, LOAD_ERROR, LOAD_HELP } from './js/data/schema.js';
 import { loadFrom, saveTo, emptyApp } from './js/data/persistence.js';
 
@@ -23,7 +24,7 @@ const state = {
   cur: 0,
   sec: 'history',
   necOnly: false,
-  mode: 'practice',          // 'practice' | 'answer'
+  ui: 'exam',                // 'study' 学习 · 'exam' 考试 · 'review' 复盘 —— 三档信息密度
   q: '',
   picked: {},                // picked[caseIdx][sec] = Set(key)
   diagQ: '',                 // 诊断模块内搜索
@@ -81,9 +82,23 @@ function necCountInNode(n) {
 }
 function getCase() { return state.cases[state.cur]; }
 
-// 「只看必要项」是答案模式的对照工具。练习模式必须无视它，
-// 否则切回练习时筛选仍然生效，学生会以为选项变少了。
-function necFilterOn() { return state.mode === 'answer' && state.necOnly; }
+// ================= 三档信息密度 =================
+// 学习：答案全部摊开对照，不作答。
+// 考试：只有题目与自己的选择——「必要 / 分值 / 标准结果 / 含正确选项」一个都不许出现。
+// 复盘：提交之后，把自己的作答与标准答案并排，外加临床思维链。
+// 复盘在未提交时【不开】答案：否则它就是一个抄答案的窗口，考试档也跟着失效。
+function isStudy() { return state.ui === 'study'; }
+function isExam() { return state.ui === 'exam'; }
+function isReview() { return state.ui === 'review'; }
+function showsAnswers() { return isStudy() || (isReview() && answerLocked()); }
+// 只有「考试档且未提交」才谈得上改作答。凡是改了作答的东西（全选/检测、分类按钮、
+// 支持标记、添加诊断的搜索框）都必须用这个条件渲染——否则锁定后或复盘里会留下
+// 一堆点了没反应的控件，而派发层已经提前 return，用户只会以为页面坏了。
+function canEdit() { return isExam() && !answerLocked(); }
+
+// 「只看必要项」是学习档的对照工具。考试档必须无视它，
+// 否则切回考试时筛选仍然生效，学生会以为选项变少了。
+function necFilterOn() { return isStudy() && state.necOnly; }
 
 function pickedSet() {
   state.picked[state.cur] = state.picked[state.cur] || {};
@@ -99,13 +114,15 @@ function answerLocked() { return !!(state.scores && state.scores[state.cur]); }
 function togglePick(sec, key) {
   if (answerLocked()) return;
   const set = pickedSet();
-  // 练习模式：已采集项不可回退取消（模拟考试，选项提交后不可撤销）
+  // 考试档：已采集项不可回退取消（模拟考试，选项提交后不可撤销）
   if (set.has(key)) return;
   set.add(key);
   saveState();
 }
 
 function lockBannerHTML() {
+  // 学习档是纯对照，不参与作答，锁定与否与学生在那一档做什么无关
+  if (isStudy()) return '';
   if (!answerLocked()) return '';
   const s = state.scores[state.cur];
   return `<div class="lock-banner" role="status">本病例已提交（${s.total.toFixed(1)} 分），答卷已锁定：继续点选不会改变状态，也不会改动上方评分。要重做请点右侧「重新练习本病例」。</div>`;
@@ -188,9 +205,8 @@ function normName(s) {
 function renderSidebar() {
   const el = document.getElementById('caseList');
   el.innerHTML = state.cases.map((c, i) => {
-    const practice = state.mode === 'practice';
-    const scoreLine = practice ? '' :
-      `<span class="c-score">必要项 ${['history', 'physical', 'aux', 'diagnosis', 'treatment'].reduce((a, sec) => a + countNec(c.sections, sec), 0)}</span>`;
+    const scoreLine = showsAnswers() ?
+      `<span class="c-score">必要项 ${['history', 'physical', 'aux', 'diagnosis', 'treatment'].reduce((a, sec) => a + countNec(c.sections, sec), 0)}</span>` : '';
     return `<button class="case-card ${i === state.cur ? 'active' : ''}" data-i="${i}"${i === state.cur ? ' aria-current="true"' : ''}>
       <span class="c-name">${esc(c.name)}</span>
       <span class="c-meta">${esc(c.dept)} · ${esc(c.patient)} · ${esc(c.gender)} · ${esc(c.age)}</span>
@@ -239,7 +255,7 @@ function renderTabs() {
   });
 }
 
-// ================= 答案模式（三层对照） =================
+// ================= 学习档（三层对照） =================
 function renderHistory() {
   const cats = getCase().sections.history;
   let any = false;
@@ -317,10 +333,10 @@ function collectAuxLeaves(nodes, path, grp, grpKey, out) {
   }
 }
 // 辅助分组标题必须是真 <button>：普通 div 只接 click，键盘用户永远打不开分组。
-// nec 只在答案模式传入，练习模式传 0，否则「含正确选项」的小圆点会把答案泄露给考生。
+// nec 只在学习/复盘档传入，考试档传 0，否则「含正确选项」的小圆点会把答案泄露给考生。
 function auxGroupToggle(title, n, nec, grpKey, gi, expanded) {
   return `<button type="button" class="aux-sec-toggle" data-grp="${esc(grpKey)}" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="aux-grp-${gi}">`
-    + `${scentMark(nec)}<span class="aux-sec-title">${esc(title)}</span><span class="aux-sec-count">${n} 项</span></button>`;
+    + `${scentMark(nec)}<span class="aux-sec-title">${esc(title)}</span><span class="aux-sec-count">${n} 项${nec ? ` · 必要 ${nec}` : ''}</span></button>`;
 }
 
 function renderAux() {
@@ -360,16 +376,11 @@ function renderAux() {
   return html;
 }
 
+// 学习档的治疗对照：不按场景过滤，直接铺开全部措施，并显示适用场景与分值。
+// （考试/复盘走 renderPracticeTreatment，那里才有场景闸门与点选态。）
 function renderTreatment() {
-  const mode = state.mode;
-  const scene = state.txScene[state.cur];
-  // 练习模式：未选场景则先展示场景闸门；答案模式：直接展示全部治疗措施（不过滤场景）
-  if (mode === 'practice' && !scene) return renderSceneGate();
   const groups = getCase().sections.treatment
-    .map(g => ({ ...g, items: g.items.filter(it => {
-        const sceneOk = mode === 'answer' || (it.scenes || []).includes(scene);
-        return (!necFilterOn() || isNec(it)) && sceneOk && matchText(it, state.q, [g.group]);
-      }) }))
+    .map(g => ({ ...g, items: g.items.filter(it => (!necFilterOn() || isNec(it)) && matchText(it, state.q, [g.group])) }))
     .filter(g => g.items.length);
   if (!groups.length) return empty();
   return `<div class="section">${groups.map(g => {
@@ -380,7 +391,7 @@ function renderTreatment() {
       <div class="group-body">
         ${g.items.map(it => `
           <details class="item ${isNec(it) ? 'nec' : ''}">
-            <summary><span class="i-name">${esc(it.name)}</span>${mode === 'answer' ? (it.scenes && it.scenes.length ? `<span class="attr${it.scenesUnknown ? ' attr-warn' : ''}">${esc(it.scenes.join('/'))}${it.scenesUnknown ? '（源数据未标注，非“全部适用”）' : ''}</span>` : (it.attr ? `<span class="attr">${esc(it.attr)}</span>` : '')) : (it.attr ? `<span class="attr">${esc(it.attr)}</span>` : '')}${isNec(it) ? '<span class="badge-nec">必要</span><span class="badge-score">' + scoreOf(it) + '分</span>' : ''}</summary>
+            <summary><span class="i-name">${esc(it.name)}</span>${it.scenes && it.scenes.length ? `<span class="attr${it.scenesUnknown ? ' attr-warn' : ''}">${esc(it.scenes.join('/'))}${it.scenesUnknown ? '（源数据未标注，非“全部适用”）' : ''}</span>` : (it.attr ? `<span class="attr">${esc(it.attr)}</span>` : '')}${isNec(it) ? '<span class="badge-nec">必要</span><span class="badge-score">' + scoreOf(it) + '分</span>' : ''}</summary>
             ${it.attr && !isNec(it) ? `<div class="i-detail"><div class="kv attr"><span class="k">属性</span><span class="v">${esc(it.attr)}</span></div></div>` : ''}
           </details>`).join('')}
       </div>
@@ -444,8 +455,11 @@ function renderEvSrc(d, src, isAnswer) {
           const marks = getDiagMarks(d.name);
           const sup = marks.support.has(key);
           const uns = marks.unsupport.has(key);
-          labels = `<button class="ev-label green ${sup ? 'active' : ''}" data-d="${esc(d.name)}" data-k="${esc(key)}" data-v="support">支持</button>` +
-                   `<button class="ev-label red ${uns ? 'active' : ''}" data-d="${esc(d.name)}" data-k="${esc(key)}" data-v="unsupport">不支持</button>`;
+          // 复盘档里标记是读回来的答卷，不是可点的按钮
+          labels = canEdit()
+            ? `<button class="ev-label green ${sup ? 'active' : ''}" data-d="${esc(d.name)}" data-k="${esc(key)}" data-v="support">支持</button>` +
+              `<button class="ev-label red ${uns ? 'active' : ''}" data-d="${esc(d.name)}" data-k="${esc(key)}" data-v="unsupport">不支持</button>`
+            : (sup ? '<span class="ev-label green active">支持</span>' : '') + (uns ? '<span class="ev-label red active">不支持</span>' : '');
         }
         return `<div class="ev"><div class="ev-text"><span class="ev-item">${esc(u.sub ? u.sub + ' · ' + u.item : u.item)}</span><span class="ev-content">${esc(u.content)}</span></div>${labels}</div>`;
       }).join('')}
@@ -464,27 +478,45 @@ function getDiagClass(dname) {
   return (m && m[dname]) || '未分类';
 }
 
-// ================= 练习模式（点选交互） =================
+// ================= 作答区（考试 / 复盘共用同一套卡片）=================
+// 复盘档在同一条目上叠三层信息：该不该选（必要 / 分值）、你有没有选（漏 / 未计分）、
+// 以及本应得到的结果。这样复盘不必再切去学习档逐条对照。
+function stdText(sec, item) {
+  if (sec === 'history') return item.reply || '';
+  if (sec === 'physical') return item.result || '';
+  if (sec === 'aux') return [item.result, item.unit, item.ref ? `（参考值 ${item.ref}）` : ''].filter(Boolean).join(' ');
+  if (sec === 'treatment') return item.attr || '（治疗措施）';
+  return '';
+}
 function pCard(sec, item, path, hidePos) {
   const key = keyOf(sec, item, path);
   const picked = isPicked(sec, key);
   const pend = (sec === 'aux' && !picked && auxPendingSet().has(key));
+  const reveal = showsAnswers();
+  const nec = isNec(item);
   let layer2 = '';
   if (picked) {
     if (sec === 'history') layer2 = `<div class="p-reply">${esc(item.reply)}</div>`;
     else if (sec === 'physical') layer2 = `<div class="p-reply">${esc(item.result)}</div>`;
     else if (sec === 'aux') layer2 = `<div class="p-reply">${esc(item.result)}${item.ref ? `<div class="ref">参考值：${esc(item.ref)}</div>` : ''}${item.sig ? `<div class="sig">临床意义：${esc(item.sig)}</div>` : ''}</div>`;
     else if (sec === 'treatment') layer2 = `<div class="p-reply">${item.attr ? esc(item.attr) : '（治疗措施）'}</div>`;
+  } else if (reveal && nec) {
+    layer2 = `<div class="p-reply std">本该得到：<b>${esc(stdText(sec, item)) || '（无结果）'}</b></div>`;
   }
   const badge = picked ? '<span class="b-picked">✓ 已采集</span>' : '';
+  const revealBadge = !reveal ? ''
+    : (nec ? `<span class="badge-nec">必要</span><span class="badge-score">${scoreOf(item)}分</span>` : '') +
+      (nec && !picked ? '<span class="b-miss">漏</span>' : '') +
+      (!nec && picked ? '<span class="b-off">未计分</span>' : '');
   const price = (sec === 'aux') ? priceHTML(item.cost, '¥') : '';
   const l1 = sec === 'history' ? item.q : item.name;
   const extras = (sec === 'physical' && !hidePos) ? `${item.tool ? `<span class="attr">${esc(item.tool)}</span>` : ''}${item.position ? `<span class="attr">${esc(item.position)}</span>` : ''}` : (sec === 'treatment' && item.attr ? `<span class="attr">${esc(item.attr)}</span>` : '');
-  return `<button type="button" class="pcard ${picked ? 'picked' : ''}${pend ? ' pend' : ''}" data-sec="${sec}" data-key="${esc(key)}" aria-pressed="${picked ? 'true' : 'false'}">
+  return `<button type="button" class="pcard ${picked ? 'picked' : ''}${pend ? ' pend' : ''}${reveal && nec ? ' nec' : ''}" data-sec="${sec}" data-key="${esc(key)}" aria-pressed="${picked ? 'true' : 'false'}">
     <span class="p-name">${pend ? '<span class="pend-ic"></span>' : ''}${esc(l1)}</span>
     ${extras}
     ${price}
     ${badge}
+    ${revealBadge}
     ${layer2}
   </button>`;
 }
@@ -497,18 +529,28 @@ function pGrp(head, bodyHtml, open, key) {
   return `<details class="pgroup" data-grp="${esc(key || '')}" ${open ? 'open' : ''}><summary class="pgroup-head">${head}</summary><div class="pgroup-body">${bodyHtml}</div></details>`;
 }
 
+// 组头的「必要 N」计数与寻血小圆点只在复盘/学习档出现：
+// 考试档里这两个东西等于直接告诉学生哪一组藏着答案（以前 auxGroupToggle 传 0 就是为防这个）。
+function grpCount(total, nec, unit) {
+  return showsAnswers()
+    ? `<span class="g-count">${total} ${unit || '项'} · 必要 ${nec}</span>`
+    : `<span class="g-count">${total} ${unit || '项'}</span>`;
+}
+function grpScent(nec) { return showsAnswers() ? scentMark(nec) : ''; }
+
 function renderPracticeHistory() {
   const cats = getCase().sections.history;
   let any = false;
   let html = '<div class="section psec">';
   for (const cat of cats) {
-    // 参考答案模式：按一级分类直接铺开（消掉冗余二级头）
+    // 学习档：按一级分类直接铺开（消掉冗余二级头）
     // 但键必须带上二级小节，否则两个分类下的同名问题会共用一个勾选状态
     const allItems = cat.subs.flatMap(sub => sub.items.map(it => ({ it, sub })));
     const items = allItems.filter(x => (!necFilterOn() || x.it.necessary) && matchText(x.it, state.q, [cat.category, x.it.explain]));
     if (!items.length) continue;
     any = true;
-    const head = `${esc(cat.category)}<span class="g-count">${items.length} 项</span>`;
+    const nec = items.filter(x => isNec(x.it)).length;
+    const head = `${grpScent(nec)}${esc(cat.category)}${grpCount(items.length, nec)}`;
     const body = items.map(x => pCard('history', x.it, historyPath(cat, x.sub))).join('');
     html += pGrp(head, body, !!state.q, 'hist|' + cat.category);
   }
@@ -523,14 +565,16 @@ function renderPracticePhysicalNode(n, path, hidePos) {
     const useHide = hidePos || n.kind === 'part';
     const items = n.items.filter(it => (!necFilterOn() || it.necessary) && matchText(it, state.q, p2.concat(it.tool, it.position)));
     if (!items.length) return '';
-    const head = `${esc(n.name)}${n.kind === 'model' ? '<span class="g-sub">· 3D 人体模型</span>' : ''}<span class="g-count">${items.length} 项</span>`;
+    const nec = items.filter(isNec).length;
+    const head = `${grpScent(nec)}${esc(n.name)}${n.kind === 'model' ? '<span class="g-sub">· 3D 人体模型</span>' : ''}${grpCount(items.length, nec)}`;
     const body = items.map(it => pCard('physical', it, p2, useHide)).join('');
     return pGrp(head, body, open, 'phy|' + p2.join('▸'));
   }
   if (n.subs) {
     const subs = n.subs.map(s => renderPracticePhysicalNode(s, p2, hidePos)).filter(Boolean).join('');
     if (!subs) return '';
-    const head = `${esc(n.name)}<span class="g-count">${n.subs.length} 个子项</span>`;
+    const nec = n.subs.reduce((a, s) => a + necCountInNode(s), 0);
+    const head = `${grpScent(nec)}${esc(n.name)}${grpCount(n.subs.length, nec, '个子项')}`;
     return pGrp(head, `<div class="pindent">${subs}</div>`, open, 'phy|' + p2.join('▸'));
   }
   return '';
@@ -554,14 +598,16 @@ function renderPracticeAux() {
       if (bodyOpen) { html += '</div>'; bodyOpen = false; }
       curGrp = l.grp; curGrpKey = l.grpKey; gi++;
       const n = filtered.filter(x => x.grpKey === curGrpKey).length;
+      const necN = showsAnswers() ? filtered.filter(x => x.grpKey === curGrpKey && isNec(x.item)).length : 0;
       const grpPend = filtered.filter(x => x.grpKey === curGrpKey && pend.has(keyOf('aux', x.item, x.path))).length;
       const grpAvail = filtered.filter(x => x.grpKey === curGrpKey && !isPicked('aux', keyOf('aux', x.item, x.path))).length;
       // v45 全选 toggle：组内全部未采集项都已待检测 → 显示「取消全选」；否则「全选」
       const grpAllPend = grpAvail > 0 && grpAvail === filtered.filter(x => x.grpKey === curGrpKey && !isPicked('aux', keyOf('aux', x.item, x.path)) && pend.has(keyOf('aux', x.item, x.path))).length;
-      const selBtn = grpAvail > 0 ? `<button type="button" class="aux-sel ${grpAllPend ? 'all' : ''}" data-grp="${esc(curGrpKey)}" aria-pressed="${grpAllPend ? 'true' : 'false'}">${grpAllPend ? '取消全选' : '全选'}</button>` : '';
-      const runBtn = grpPend > 0 ? `<button type="button" class="aux-run" data-grp="${esc(curGrpKey)}">检测 ${grpPend} 项</button>` : '';
+      // 全选/检测是改作答的动作，只有考试档给按钮；复盘档点了不生效的按钮是骗人
+      const selBtn = canEdit() && grpAvail > 0 ? `<button type="button" class="aux-sel ${grpAllPend ? 'all' : ''}" data-grp="${esc(curGrpKey)}" aria-pressed="${grpAllPend ? 'true' : 'false'}">${grpAllPend ? '取消全选' : '全选'}</button>` : '';
+      const runBtn = canEdit() && grpPend > 0 ? `<button type="button" class="aux-run" data-grp="${esc(curGrpKey)}">检测 ${grpPend} 项</button>` : '';
       const collapsed = !state.q && !expanded.has(curGrpKey);  // v48 默认折叠，搜索时展开
-      html += `<div class="aux-sec-head ${collapsed ? 'collapsed' : ''}">${auxGroupToggle(curGrp, n, 0, curGrpKey, gi, !collapsed)}${selBtn}${runBtn}</div>`;
+      html += `<div class="aux-sec-head ${collapsed ? 'collapsed' : ''}">${auxGroupToggle(curGrp, n, necN, curGrpKey, gi, !collapsed)}${selBtn}${runBtn}</div>`;
       html += `<div class="aux-grp-body" id="aux-grp-${gi}">`;
       bodyOpen = true;
     }
@@ -569,10 +615,18 @@ function renderPracticeAux() {
     const key = keyOf('aux', l.item, l.path);
     const picked = isPicked('aux', key);
     const isPend = pend.has(key);
-    html += `<button type="button" class="aux-row ${picked ? 'picked' : ''} ${isPend ? 'pend' : ''}" data-sec="aux" data-key="${esc(key)}" aria-pressed="${isPend || picked ? 'true' : 'false'}">
+    const nec = isNec(l.item);
+    const revealBadge = !showsAnswers() ? ''
+      : (nec ? `<span class="badge-nec">必要</span><span class="badge-score">${scoreOf(l.item)}分</span>` : '') +
+        (!picked && nec ? '<span class="b-miss">漏</span>' : '') +
+        (picked && !nec ? '<span class="b-off">未计分</span>' : '');
+    const stdLine = showsAnswers() && nec && !picked ? `<span class="aux-std">${esc(stdText('aux', l.item)) || '（无结果）'}</span>` : '';
+    html += `<button type="button" class="aux-row ${picked ? 'picked' : ''} ${isPend ? 'pend' : ''}${showsAnswers() && nec ? ' nec' : ''}" data-sec="aux" data-key="${esc(key)}" aria-pressed="${isPend || picked ? 'true' : 'false'}">
       <span class="ar-name">${isPend ? '<span class="pend-ic"></span>' : ''}${esc(l.item.name)}${l.item.abbreviation ? ` <span class="attr">${esc(l.item.abbreviation)}</span>` : ''}</span>
       ${priceHTML(l.item.cost, '￥')}
       ${picked ? '<span class="b-picked">✓ 已采集</span>' : ''}
+      ${revealBadge}
+      ${stdLine}
     </button>`;
   }
   if (bodyOpen) html += '</div>';
@@ -607,20 +661,25 @@ function renderPracticeTreatment() {
   </div>`;
 }
 
-// 诊断模块：练习模式
+// 诊断模块：作答区（考试 / 复盘共用；只有考试档可改）
 function renderPracticeDiagnosis() {
   const c = getCase();
   const diags = c.sections.diagnosis;
   state.diagMarks[state.cur] = state.diagMarks[state.cur] || {};
+  const reveal = showsAnswers();
+  const trace = reveal ? hypothesisTrace(c, answerView()) : [];
 
   const selectedNames = Object.keys(state.diagMarks[state.cur]);
   const active = state.activeDiag[state.cur] || selectedNames[0] || '';
 
-  let html = `<div class="section psec diag-practice">
-    <div class="diag-search-box">
+  // 搜索框是「添加诊断」的入口，复盘档留着它就是一点没反应的输入框
+  let html = `<div class="section psec diag-practice">`;
+  if (canEdit()) {
+    html += `<div class="diag-search-box">
       <input id="diagSearch" class="search wide" type="search" placeholder="搜索诊断库并添加诊断…" autocomplete="off" value="${esc(state.diagQ)}" />
       <div id="diagSuggestions" class="diag-suggestions"></div>
     </div>`;
+  }
 
   if (selectedNames.length) {
     html += `<div class="diag-selected-head">已选诊断 (${selectedNames.length})</div>`;
@@ -628,7 +687,11 @@ function renderPracticeDiagnosis() {
       const d = diags.find(x => x.name === n);
       const cls = getDiagClass(n);
       const isActive = n === active;
-      const clsBtns = DIAG_CLS.map(c => `<button class="cls-btn ${cls === c ? 'active' : ''}" data-d="${esc(n)}" data-cls="${esc(c)}">${esc(c)}</button>`).join('');
+      const th = trace.find(t => t.name === n);
+      const verdictChip = th ? `<span class="rt-verdict v-${esc(th.verdict)}">${esc(th.verdictLabel)}</span>` : '';
+      const clsBtns = canEdit()
+        ? DIAG_CLS.map(c => `<button class="cls-btn ${cls === c ? 'active' : ''}" data-d="${esc(n)}" data-cls="${esc(c)}">${esc(c)}</button>`).join('')
+        : `<span class="cls-tag cls-${esc(cls)}">${esc(cls)}</span>`;
       // 一级标题（疾病名）只在此处出现一次；其下直接铺开证据树（源=二级、条目=三级），不再重复包裹疾病名
       const evHtml = d && d.bySrc && Object.keys(d.bySrc).length
         ? `<div class="diag-evtree">${Object.keys(d.bySrc).sort().map(src => renderEvSrc(d, src, false)).join('')}</div>`
@@ -636,15 +699,23 @@ function renderPracticeDiagnosis() {
       const preview = renderDiagPreview(n);
       return `<div class="diag-selected ${isActive ? 'active' : ''}" data-d="${esc(n)}">
         <div class="diag-selected-bar">
-          <span class="diag-selected-name">${esc(n)}</span>
+          <span class="diag-selected-name">${esc(n)}</span>${verdictChip}
           <div class="cls-btns">${clsBtns}</div>
         </div>
         ${preview}
         ${evHtml}
       </div>`;
     }).join('');
+    if (reveal) {
+      const missed = (c.sections.diagnosis || []).filter(a => !trace.some(t => t.standard === a.name));
+      html += missed.length
+        ? `<div class="rt-miss"><b>标准答案里还有 ${missed.length} 个诊断你没提</b>${missed.map(m => `<span class="rt-chip miss">${esc(m.name)} · ${esc(m.cls || '未分类')}</span>`).join('')}</div>`
+        : '<div class="rt-miss ok">标准答案里的诊断你都提到了</div>';
+    }
   } else {
-    html += `<div class="empty">在上方搜索框输入诊断名，点击添加后可在本病例做支持/不支持标记，并选择「主要/次要/鉴别/疑似」分类。</div>`;
+    html += `<div class="empty">${canEdit()
+      ? '在上方搜索框输入诊断名，点击添加后可在本病例做支持/不支持标记，并选择「主要/次要/鉴别/疑似」分类。'
+      : '这份答卷没添加任何诊断。回到「考试」档重新作答即可添加；提交后这里会逐条还原你的推理路径。'}</div>`;
   }
   html += '</div>';
   return html;
@@ -699,25 +770,25 @@ function restoreOpenGroups(el, keys) {
 }
 function renderSection() {
   const sec = state.sec;
-  const mode = state.mode;
+  const study = isStudy();
   const el = document.getElementById('section');
   // 捕获当前展开的分组，重渲染后恢复（避免点选项时二级目录被自动折叠）
   const openKeys = [...el.querySelectorAll('details.pgroup[open]')].map(d => d.dataset.grp).filter(Boolean);
   if (sec === 'history') {
-    const body = mode === 'practice' ? renderPracticeHistory() : renderHistory();
+    const body = study ? renderHistory() : renderPracticeHistory();
     el.innerHTML = lockBannerHTML() + renderLimitBar('history') + body;
   } else if (sec === 'physical') {
-    const body = mode === 'practice' ? renderPracticePhysical() : renderPhysical();
+    const body = study ? renderPhysical() : renderPracticePhysical();
     el.innerHTML = lockBannerHTML() + renderLimitBar('physical') + body;
   } else if (sec === 'aux') {
-    const body = mode === 'practice' ? renderPracticeAux() : renderAux();
+    const body = study ? renderAux() : renderPracticeAux();
     el.innerHTML = lockBannerHTML() + renderLimitBar('aux') + body;
   } else if (sec === 'treatment') {
-    const body = mode === 'practice' ? renderPracticeTreatment() : renderTreatment();
+    const body = study ? renderTreatment() : renderPracticeTreatment();
     el.innerHTML = lockBannerHTML() + renderLimitBar('treatment') + body;
   } else if (sec === 'diagnosis') {
-    el.innerHTML = lockBannerHTML() + (mode === 'practice' ? renderPracticeDiagnosis() : renderDiagnosisAnswer());
-    if (mode === 'practice') { renderDiagSuggestions(); bindDiagLabels(); }
+    el.innerHTML = lockBannerHTML() + (study ? renderDiagnosisAnswer() : renderPracticeDiagnosis());
+    if (!study) { renderDiagSuggestions(); bindDiagLabels(); }
     restoreOpenGroups(el, openKeys);
     return;
   }
@@ -811,18 +882,18 @@ function syncRpBtn() {
   if (!btn) return;
   btn.setAttribute('aria-expanded', String(rpIsOpen()));
   if (rpIsOpen()) { btn.textContent = '✕ 收起'; return; }
-  // 练习模式且本题尚未提交：悬浮球文案提示「可在此提交」
-  if (state.mode === 'practice' && !state.scores[state.cur]) {
+  // 考试档且还能作答：悬浮球文案提示「可在此提交」
+  if (canEdit()) {
     btn.textContent = '📋 报告 · 提交';
   } else {
     btn.textContent = '📋 ' + panelTitle(state.sec);
   }
 }
-// 移动端提示条：仅在手机 + 练习模式 + 本案未提交 + 未手动关闭时显示
+// 移动端提示条：仅在手机 + 还能作答（考试档且未提交）+ 未手动关闭时显示
 function renderRpHint() {
   const el = document.getElementById('rpHint');
   if (!el) return;
-  const show = isMobileLayout() && state.mode === 'practice' && !state.scores[state.cur] && !state.hintDismissed;
+  const show = isMobileLayout() && canEdit() && !state.hintDismissed;
   el.classList.toggle('show', show);
   el.hidden = !show;
   const ball = document.getElementById('rpToggle');
@@ -930,26 +1001,22 @@ function extractCheckRecord(fullText) {
 //   ext 是"字段就地延长"，真实增量只是后缀 suf；重放时后缀只挂到【已点中的基行】上，
 //   若基行未被点中则只显示后缀(去前导标点)，绝不把未点中的基内容带出 -> 彻底消除"意外的多余增量"。
 // 输出只可能包含被点步骤贡献的内容，绝不混入未点步骤。
-const _hrMapCache = {};
-function _hrQMap(arr) {
-  let m = _hrMapCache[state.cur];
-  if (!m) { m = {}; arr.forEach((s, i) => { m[norm(s.q)] = i; }); _hrMapCache[state.cur] = m; }
-  return m;
+// 重放数据来源：勾选的问题 → 系统出题序列里的步序，映射只此一份（interview-engine 提供）。
+function pickedHistoryStepIdxs() {
+  const arr = (state.histRec && state.histRec[state.cur]) || [];
+  if (!arr.length) return [];
+  return stepIdxsForQuestions(arr, collectPicked('history').filter(p => p.nec).map(p => p.l1));
 }
-// 重放算法本体在 js/domain/history-replay.js：构建脚本的发布前自检用的是同一份实现。
 function historyRecordText() {
   const arr = (state.histRec && state.histRec[state.cur]) || [];
   if (!arr.length) return null;
-  const map = _hrQMap(arr);
-  const items = collectPicked('history').filter(p => p.nec);
-  if (!items.length) return null;
-  const idxs = [...new Set(items.map(p => map[norm(p.l1)]).filter(i => i != null))];
+  const idxs = pickedHistoryStepIdxs();
   if (!idxs.length) return null;
   const out = replayPicked(arr, idxs).join('\n');
   return out || null;
 }
 
-// 答案模式用：重放【全部】步骤的 ops，得到系统生成的「完整检查记录」（不依赖点选）。
+// 学习档用：重放【全部】步骤的 ops，得到系统生成的「完整检查记录」（不依赖点选）。
 function historyRecordFullText() {
   const arr = (state.histRec && state.histRec[state.cur]) || [];
   if (!arr.length) return null;
@@ -1090,18 +1157,25 @@ function renderSubmitArea() {
 function renderReport() {
   const el = document.getElementById('reportPanel');
   let html = '';
-  if (state.mode === 'practice') html += renderSubmitArea();
+  if (!isStudy()) html += renderSubmitArea();
+  if (isReview()) html += reviewGateHTML();
+  if (isReview() && answerLocked()) html += renderReasoningTimeline();
   html += renderReportInner();
   el.innerHTML = html;
   syncRpBtn();
 }
+// 复盘档在没提交之前不开答案：先说清楚为什么看不见东西。
+function reviewGateHTML() {
+  if (answerLocked()) return '';
+  return `<div class="rp-note" role="status">还没提交，所以这里只有你自己的作答：复盘档会把「你选的 / 标准答案」并排显示，未提交时显示就等于抄答案。回到「考试」档作答，提交后自动进入复盘。</div>`;
+}
 function renderReportInner() {
   const sec = state.sec;
   if (sec === 'diagnosis') {
-    if (state.mode === 'practice') return renderDiagEvidencePanel();
-    return `<div class="rp-title">依据列表</div>${reportBlock('diagnosis')}`;
+    if (isStudy()) return `<div class="rp-title">依据列表</div>${reportBlock('diagnosis')}`;
+    return renderDiagEvidencePanel();
   }
-  if (state.mode === 'answer') {
+  if (isStudy()) {
     const title = panelTitle(sec);
     let body;
     if (sec === 'history') {
@@ -1116,7 +1190,7 @@ function renderReportInner() {
     }
     return `<div class="rp-title">${esc(title)}</div>${body}`;
   }
-  // 练习模式（非诊断）
+  // 考试 / 复盘档（非诊断）
   const title = panelTitle(sec);
   let html = `<div class="rp-title">${esc(title)}</div>`;
   if (sec === 'history') {
@@ -1144,7 +1218,7 @@ function renderReportInner() {
   return html;
 }
 
-// 答案模式：体格检查 / 辅助检查 右栏——列出该板块全部项目的检查结果（数值 / 参考值 / 临床意义）
+// 学习档：体格检查 / 辅助检查 右栏——列出该板块全部项目的检查结果（数值 / 参考值 / 临床意义）
 function renderAnswerResults(sec) {
   const s = getCase().sections;
   const nodes = sec === 'physical' ? s.physical : s.aux;
@@ -1166,7 +1240,7 @@ function renderAnswerResults(sec) {
     </div>`).join('')}</div>`;
 }
 
-// 练习模式：已采集条目（历史兜底）渲染为清爽列表
+// 考试 / 复盘档：已采集条目（历史兜底）渲染为清爽列表
 function formatPickedQA(items) {
   return `<div class="rp-records-label">已采集 ${items.length} 项</div><div class="rp-records">${items.map(p => `
     <div class="rp-record">
@@ -1174,7 +1248,7 @@ function formatPickedQA(items) {
       ${p.l2 ? `<div class="rp-rec-a">${esc(p.l2)}</div>` : ''}
     </div>`).join('')}</div>`;
 }
-// 练习模式：体格检查 / 辅助 / 治疗 已采集结果清爽列表（替代原 <pre> 堆砌）
+// 考试 / 复盘档：体格检查 / 辅助 / 治疗 已采集结果清爽列表（替代原 <pre> 堆砌）
 function formatPickedResults(items) {
   return `<div class="rp-records">${items.map(p => `
     <div class="rp-record">
@@ -1200,17 +1274,19 @@ function renderDiagEvidencePanel() {
     return html;
   }
   html += `<div class="ev-pool">`;
+  const readOnly = !canEdit();   // 复盘档里这些按钮点不动（改作答只在考试档），必须换成静态标记
   for (const c of pool) {
     const sup = marks.support.has(c.key);
     const uns = marks.unsupport.has(c.key);
+    const btns = readOnly
+      ? (sup ? '<span class="ev-label green active">支持</span>' : '') + (uns ? '<span class="ev-label red active">不支持</span>' : '')
+      : `<button class="ev-label green ${sup ? 'active' : ''}" data-d="${esc(active)}" data-k="${esc(c.key)}" data-v="support">支持</button>` +
+        `<button class="ev-label red ${uns ? 'active' : ''}" data-d="${esc(active)}" data-k="${esc(c.key)}" data-v="unsupport">不支持</button>`;
     html += `<div class="ev-pool-item">
       <div class="ev-pool-meta"><span class="ev-pool-src">${esc(c.sec)}</span></div>
       <div class="ev-pool-label-row">
         <div class="ev-pool-label">${esc(c.label)}</div>
-        <div class="ev-pool-btns">
-          <button class="ev-label green ${sup ? 'active' : ''}" data-d="${esc(active)}" data-k="${esc(c.key)}" data-v="support">支持</button>
-          <button class="ev-label red ${uns ? 'active' : ''}" data-d="${esc(active)}" data-k="${esc(c.key)}" data-v="unsupport">不支持</button>
-        </div>
+        <div class="ev-pool-btns">${btns}</div>
       </div>
       ${c.detail ? `<div class="ev-pool-detail">${esc(c.detail)}</div>` : ''}
     </div>`;
@@ -1218,9 +1294,88 @@ function renderDiagEvidencePanel() {
   html += `</div>`;
   return html;
 }
+// ================= 临床思维链（复盘档）=================
+// 站点原来只告诉学生「点了一项，得了几分」。这一条把他自己的路径还原成
+// 发现线索 → 提出假设 → 寻找证据 → 排除 / 待排 → 确定诊断，
+// 数据全部来自 interview-engine（问诊轨迹）与 reasoning（假设/依据对账），显示层不自己数。
+const RT_CAP = 8;   // 每段最多列几条：真实四例的依据树最多一例有 2160 条，一次糊上去等于没有
+
+function rtList(items, render, emptyText) {
+  if (!items.length) return `<div class="rt-none">${esc(emptyText || '这一段是空的')}</div>`;
+  const shown = items.slice(0, RT_CAP);
+  const rest = items.length - shown.length;
+  return `<ul class="rt-list">${shown.map(render).join('')}</ul>` +
+    (rest > 0 ? `<div class="rt-more">另有 ${rest} 条未列出（本段共 ${items.length} 条）</div>` : '');
+}
+
+function rtStageBody(stage, r, iv) {
+  if (stage.key === 'clues') {
+    const head = iv
+      ? `<div class="rt-sum">问诊 ${iv.asked}/${iv.total} 步（跳过 ${iv.skipped}），得到检查记录 ${iv.lines.length} 行${iv.estimated ? `，其中 ${iv.estimated} 步为估算轨迹` : ''}</div>`
+      : `<div class="rt-sum">已采集 ${r.summary.clues} 条线索（本页面无问诊轨迹数据）</div>`;
+    const bySrc = Object.entries(r.summary.clueBySrc).map(([k, v]) => `${k} ${v}`).join(' · ');
+    // 同一问常一次给出多行；逐行重复问题名会看起来像 bug，所以按「这一问 → 得到的内容」合并
+    const grouped = [];
+    for (const c of stage.items) {
+      const last = grouped[grouped.length - 1];
+      if (last && last.from === c.from && last.src === c.src) last.details.push(c.detail || '（无回复）');
+      else grouped.push({ src: c.src, from: c.from, details: [c.detail || '（无回复）'] });
+    }
+    return head + `<div class="rt-sub">${esc(bySrc)}</div>` + rtList(grouped, g =>
+      `<li class="rt-item"><span class="rt-src">${esc(g.src)}</span><span class="rt-q">${esc(g.from)}</span><i class="rt-arrow">→</i><span class="rt-a">${g.details.map(d => esc(d)).join('； ')}</span></li>`);
+  }
+  if (stage.key === 'hypotheses') {
+    return rtList(stage.items, h =>
+      `<li class="rt-item"><span class="rt-idx">${h.order + 1}</span><span class="rt-q">${esc(h.name)}</span>` +
+      `<span class="rt-verdict v-${esc(h.verdict)}">${esc(h.verdictLabel)}</span></li>`,
+      '一个诊断都没添加');
+  }
+  if (stage.key === 'evidence') {
+    return rtList(stage.items, h => {
+      const acc = h.accuracy == null ? '未判读' : `判读 ${Math.round(h.accuracy * 100)}%`;
+      const chips = h.markedUnits.slice(0, 3).map(u =>
+        `<span class="rt-chip ${u.marked === 'support' ? 'ok' : 'no'}" title="${esc(u.standardSupport ? '标准：支持' : '标准：不支持')}">${esc(u.item)}</span>`).join('');
+      return `<li class="rt-item rt-ev"><span class="rt-q">${esc(h.name)}</span>` +
+        `<span class="rt-meta">落在标准依据树 ${h.onTree} 条 · ${esc(acc)}</span>${chips ? `<div class="rt-chips">${chips}</div>` : ''}</li>`;
+    }, '一条支持 / 不支持都没标');
+  }
+  if (stage.key === 'ruled') {
+    return rtList(stage.items, x =>
+      `<li class="rt-item"><span class="rt-q">${esc(x.name)}</span><span class="rt-a">${esc(x.reason)}</span></li>`,
+      '没有排除或待排的假设');
+  }
+  const final = rtList(stage.items, h =>
+    `<li class="rt-item"><span class="rt-q">${esc(h.name)}</span><span class="rt-verdict v-${esc(h.verdict)}">${esc(h.verdictLabel)}</span></li>`,
+    '没有确立的诊断（主要 / 次要诊断为空）');
+  const missed = r.missed.length
+    ? `<div class="rt-miss"><b>漏诊 ${r.missed.length} 个</b>${r.missed.map(m => `<span class="rt-chip miss">${esc(m.name)} · ${esc(m.cls)}</span>`).join('')}</div>`
+    : '<div class="rt-miss ok">标准答案里的诊断都提到了，没有漏诊</div>';
+  return final + missed;
+}
+
+function renderReasoningTimeline() {
+  const c = getCase();
+  const ans = answerView();
+  const steps = (state.histRec && state.histRec[state.cur]) || [];
+  const idxs = pickedHistoryStepIdxs();
+  const r = buildReasoning(c, ans, steps.length ? { steps, pickedIdxs: idxs } : {});
+  const iv = steps.length ? interviewPath(steps, idxs) : null;
+  const s = r.summary;
+  const stages = r.stages.map((st, i) => `<li class="rt-stage rt-${esc(st.key)}">
+      <div class="rt-dot">${i + 1}</div>
+      <div class="rt-body"><div class="rt-head">${esc(st.label)}<span class="rt-n">${st.items.length}</span></div>${rtStageBody(st, r, iv)}</div>
+    </li>`).join('');
+  return `<div class="rt-wrap" id="reasoningTimeline">
+    <div class="rp-title">临床思维链</div>
+    <div class="rt-lead">线索 ${s.clues} · 假设 ${s.hypotheses} · 确立 ${s.confirmed} · 待排 ${s.pending} · 多余 ${s.spurious} · 漏诊 ${s.missed} · 自相矛盾 ${s.contradictions}</div>
+    <ol class="rt-stages">${stages}</ol>
+    <div class="rt-foot">思维链只还原你的路径，不参与计分；判读口径与评分共用同一份依据树比对。</div>
+  </div>`;
+}
+
 function empty() { return `<div class="empty">没有匹配的内容${necFilterOn() ? '（已筛选“必要项”）' : ''}。</div>`; }
 
-// 练习模式：疾病一级标题下方「已选支持/不支持」预览（参照答案模式证据样式）
+// 作答区：疾病一级标题下方「已选支持/不支持」预览（样式参照学习档的证据块）
 function renderDiagPreview(dname) {
   const marks = getDiagMarks(dname);
   if (!marks.support.size && !marks.unsupport.size) return '';
@@ -1258,7 +1413,7 @@ function updateDiagPreview(dname) {
 function bindSectionClicks() {
   // 委托监听绑在 .layout（同时包含 #section 与 #reportPanel），否则右栏按钮点不到
   document.querySelector('.layout').addEventListener('click', e => {
-    // v48 折叠（默认全折叠）：练习/答案模式都可用（放在模式闸门前），点击组标题切换展开集合
+    // v48 折叠（默认全折叠）：三档都能用（放在档位闸门前），点击组标题切换展开集合
     const grpHead = e.target.closest('.aux-sec-toggle');
     if (grpHead) {
       const gk = grpHead.dataset.grp;
@@ -1271,9 +1426,29 @@ function bindSectionClicks() {
       if (again) again.focus({ preventScroll: true });
       return;
     }
-    if (state.mode !== 'practice') return;
+    // 场景只是「看哪一组治疗措施」的视图筛选，不改作答：锁定后、复盘档都必须能切。
+    const scene = e.target.closest('.scene-btn');
+    if (scene) {
+      const s = scene.dataset.scene;
+      state.txScene[state.cur] = s;
+      saveState();   // 场景决定已采集的治疗项看不看得见，不落盘就等于刷新后答卷被藏起来
+      renderSection(); renderReport();
+      return;
+    }
+    // 「切换场景」此前是个死控件：类名是 scene-change，而派发分支只认 .scene-btn，
+    // 于是点了没有任何反应（组标题在、文案在、不报错，三道静态闸都放过它）。
+    const sceneBack = e.target.closest('.scene-change');
+    if (sceneBack) {
+      delete state.txScene[state.cur];
+      saveState();
+      renderSection(); renderReport();
+      const gate = document.querySelector('.scene-gate .scene-btn');
+      if (gate) gate.focus({ preventScroll: true });
+      return;
+    }
+    if (!isExam()) return;   // 只有考试档可改作答；学习/复盘档的修改类点击一律不动状态
     // 已提交 = 答卷锁定：任何修改作答的点击都只闪烁提示，不动状态
-    if (answerLocked() && e.target.closest('.pcard, .aux-row, .aux-run, .aux-sel, .ev-label, .cls-btn, .scene-btn')) { flashLocked(); return; }
+    if (answerLocked() && e.target.closest('.pcard, .aux-row, .aux-run, .aux-sel, .ev-label, .cls-btn')) { flashLocked(); return; }
     const arow = e.target.closest('.aux-row');
     if (arow && arow.dataset.sec === 'aux') {
       // v36 平铺行：未采集项进入「待检测」（可多选/取消），组标题「检测 N 项」批量采集
@@ -1349,13 +1524,6 @@ function bindSectionClicks() {
       saveState();  // F4 标记点击立即落盘
       return;
     }
-    const scene = e.target.closest('.scene-btn');
-    if (scene) {
-      const s = scene.dataset.scene;
-      state.txScene[state.cur] = s;
-      renderSection(); renderReport();
-      return;
-    }
     const cls = e.target.closest('.cls-btn');
     if (cls) {
       const d = cls.dataset.d, c = cls.dataset.cls;
@@ -1394,9 +1562,15 @@ function bindSectionClicks() {
           versions: scoreStamp(),
         };
         saveState();
-        renderSection();   // 锁定横幅要立刻出现在练习区
+        // 提交即进入复盘档：这时才第一次有「可复盘的答卷」，对照与思维链不会变成抄答案的窗口。
+        // 走 state.ui 而不是 setUi('review')：setUi 会收起移动端报告抽屉，而刚提交完正该看成绩。
+        state.ui = 'review';
+        syncModeButtons();
+        renderSidebar();
+        renderSection();   // 锁定横幅要立刻出现在作答区
         renderReport();
         renderRpHint();
+        resetMainScroll();
       }
       return;
     }
@@ -1413,6 +1587,8 @@ function bindSectionClicks() {
         if (state.auxPending[ci]) delete state.auxPending[ci];
         if (state.auxExpanded[ci]) delete state.auxExpanded[ci];
         state.diagQ = '';
+        state.ui = 'exam';   // 重新练习＝回到作答：此时开对照就是抄答案
+        syncModeButtons();
         saveState();
         renderCase();
       }
@@ -1424,17 +1600,21 @@ function bindDiagLabels() {
   // delegated in bindSectionClicks
 }
 
-// ================= 模式切换 =================
-function setMode(mode) {
-  state.mode = mode;
-  document.getElementById('btnPractice').classList.toggle('active', mode === 'practice');
-  document.getElementById('btnAnswer').classList.toggle('active', mode === 'answer');
-  document.getElementById('btnPractice').setAttribute('aria-pressed', String(mode === 'practice'));
-  document.getElementById('btnAnswer').setAttribute('aria-pressed', String(mode === 'answer'));
+// ================= 信息密度切换（学习 / 考试 / 复盘）=================
+function syncModeButtons() {
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    const on = b.dataset.ui === state.ui;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+}
+function setUi(ui) {
+  state.ui = ui;
+  syncModeButtons();
   const necEl = document.getElementById('necOnlyWrap');
-  if (necEl) necEl.style.display = mode === 'practice' ? 'none' : '';
-  // 「只看必要项」只属于答案模式；切回来必须清掉，否则练习列表会被一个看不见的筛选砍短
-  if (mode !== 'answer') {
+  if (necEl) necEl.style.display = ui === 'study' ? '' : 'none';
+  // 「只看必要项」只属于学习档；切走必须清掉，否则考试档会被一个看不见的筛选砍短
+  if (ui !== 'study') {
     state.necOnly = false;
     const cb = document.getElementById('necOnly');
     if (cb) cb.checked = false;
@@ -1442,7 +1622,7 @@ function setMode(mode) {
   setRpOpen(false);
   renderSidebar(); renderHead(); renderTabs(); renderSection(); renderReport();
   renderRpHint();
-  resetMainScroll();  // P1#3 切模式后重置（替换原打在 #section 死代码上的 reset）
+  resetMainScroll();
 }
 
 // ================= 启动 =================
@@ -1475,12 +1655,11 @@ async function loadRules() {
 
 function startApp() {
   renderSidebar(); renderCase();
-  setMode('practice');
+  setUi('exam');
 
   document.getElementById('search').oninput = e => { state.q = e.target.value.trim(); renderSection(); };
   document.getElementById('necOnly').onchange = e => { state.necOnly = e.target.checked; renderSection(); };
-  document.getElementById('btnPractice').onclick = () => setMode('practice');
-  document.getElementById('btnAnswer').onclick = () => setMode('answer');
+  document.querySelectorAll('.mode-btn').forEach(b => { b.onclick = () => setUi(b.dataset.ui); });
 
   bindSectionClicks();
   bindMobileDrawer();

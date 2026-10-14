@@ -18,6 +18,7 @@ export function emptyApp() {
     diagMarks: {},       // diagMarks[caseIdx][diagName] = { support:Set, unsupport:Set }
     diagClass: {},       // diagClass[caseIdx][diagName] = '主要诊断'|... |undefined=尚未分类
     activeDiag: {},
+    txScene: {},         // txScene[caseIdx] = '住院'|... 治疗场景（决定措施列表可见性）
   };
 }
 
@@ -54,6 +55,7 @@ export function serialize(app) {
     diagMarks,
     diagClass,
     activeDiag: app.activeDiag || {},
+    txScene: app.txScene || {},
   };
 }
 
@@ -159,6 +161,16 @@ export function deserialize(raw, cases) {
   }
 
   if (d.activeDiag && typeof d.activeDiag === 'object') app.activeDiag = Object.assign({}, d.activeDiag);
+
+  // 治疗场景是「答完哪些措施看得到」的闸门：以前只有 selectedNames/diagMarks 落盘，
+  // 刷新后场景丢失会把已采集的治疗项藏回场景闸门后面（分数还在，但答卷看不见）。
+  // 新增可选字段不升 SCHEMA_VERSION：旧存档读不到它就当未选，新存档被旧代码读到时只会忽略。
+  if (d.txScene && typeof d.txScene === 'object') {
+    for (const ci in d.txScene) {
+      const s = d.txScene[ci];
+      if (typeof s === 'string' && s) app.txScene[ci] = s;
+    }
+  }
 
   // v44 兼容：没有检测次数时按已采集项目数兜底
   for (const ci in app.picked) {

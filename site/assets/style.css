@@ -877,3 +877,56 @@ body {
 /* v55 规则外置与版本绑定 */
 .sp-ver { margin-top: 6px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .score-card .sp-ver { text-align: center; }
+
+/* ===== v56 三档信息密度（学习 / 考试 / 复盘）===== */
+/* 复盘档在同一条目上叠三层：该不该选（必要/分值）、你有没有选（漏/未计分）、本应得到什么。
+   考试档根本不渲染这些节点，所以这里不需要任何「隐藏」规则。 */
+.pcard .b-miss, .aux-row .b-miss { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; border-radius: 999px; padding: 1px 9px; font-size: 11px; font-weight: 700; flex: none; }
+.pcard .b-off, .aux-row .b-off { background: #eef2f7; color: #475569; border-radius: 999px; padding: 1px 8px; font-size: 11px; flex: none; }
+.pcard .p-reply.std { background: #fffbeb; border-left: 2px solid #fbbf24; color: #92400e; }
+.aux-row .aux-std { font-size: 11.5px; color: #92400e; background: #fffbeb; border-radius: 6px; padding: 1px 7px; flex: 1 1 100%; overflow-wrap: anywhere; }
+
+/* ===== v56 临床思维链（复盘档右栏）===== */
+.rt-wrap { border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: 12px; margin: 0 0 12px; }
+.rt-lead { font-size: 12px; color: var(--muted); margin: 6px 0 10px; font-variant-numeric: tabular-nums; }
+.rt-stages { list-style: none; margin: 0; padding: 0; position: relative; }
+.rt-stages::before { content: ""; position: absolute; left: 11px; top: 8px; bottom: 8px; width: 2px; background: var(--border-strong); }
+.rt-stage { position: relative; display: flex; gap: 10px; padding: 0 0 12px; }
+.rt-stage:last-child { padding-bottom: 0; }
+.rt-dot { position: relative; z-index: 1; flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--primary); color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.rt-body { flex: 1 1 auto; min-width: 0; }
+.rt-head { font-size: 13px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.rt-n { background: #eef2f7; color: #475569; border-radius: 999px; padding: 0 8px; font-size: 11px; font-weight: 700; }
+.rt-sum, .rt-sub { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+.rt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.rt-item { font-size: 12px; line-height: 1.5; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 5px 7px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.rt-src { font-size: 10.5px; color: var(--primary-d); background: #ccfbf1; border-radius: 5px; padding: 0 6px; flex: none; }
+.rt-idx { font-size: 10.5px; color: var(--muted); flex: none; }
+.rt-q { font-weight: 600; overflow-wrap: anywhere; }
+.rt-arrow { color: var(--muted); font-style: normal; }
+.rt-a { color: #475569; flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.rt-meta { font-size: 11px; color: var(--muted); flex: 1 1 100%; }
+.rt-ev { flex: 1 1 100%; }
+.rt-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 100%; }
+.rt-chip { font-size: 11px; border-radius: 6px; padding: 1px 7px; background: #eef2f7; color: #475569; overflow-wrap: anywhere; }
+.rt-chip.ok { background: var(--nec-bg); color: var(--nec-fg); }
+.rt-chip.no { background: #fef2f2; color: #b91c1c; }
+.rt-chip.miss { background: #fff7ed; color: #9a3412; border: 1px dashed #fdba74; }
+.rt-none { font-size: 11.5px; color: var(--muted); font-style: italic; }
+.rt-more { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.rt-miss { margin-top: 6px; font-size: 11.5px; color: #9a3412; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.rt-miss.ok { color: var(--nec-fg); }
+.rt-foot { font-size: 11px; color: var(--muted); margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.diag-selected .rt-verdict { align-self: center; }
+.rt-verdict { font-size: 10.5px; border-radius: 999px; padding: 1px 8px; flex: none; background: #eef2f7; color: #475569; }
+.rt-verdict.v-confirmed { background: var(--nec-bg); color: var(--nec-fg); }
+.rt-verdict.v-spurious { background: #fef2f2; color: #b91c1c; }
+.rt-verdict.v-unclassified { background: #fffbeb; color: #92400e; }
+.rt-verdict.v-pending, .rt-verdict.v-suspected { background: #eff6ff; color: #1d4ed8; }
+.rt-verdict.v-secondary { background: #ccfbf1; color: var(--primary-d); }
+
+/* ===== v56 类名覆盖闸揪出的三个「画出来却没样式」的裸类名 =====
+   它们都是先前就存在的缺口：浏览器不报错、构建全绿，只是那几处一直是默认样式。 */
+.sec-h2 { font-size: 13px; font-weight: 700; color: var(--primary-d); }
+.ev-pool-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 2px; }
+.rp-empty { margin: 4px 0 10px; font-size: 12.5px; }

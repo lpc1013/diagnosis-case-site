@@ -135,12 +135,26 @@ export function limitPenalties(caseObj, answer, sec, rules) {
 
 const synonymsOf = a => (a.synonyms || '').split(/[，,、]/).map(norm).filter(Boolean);
 
+// 「学生写的诊断名 ↔ 标准答案」的匹配只有这一份实现。
+// 评分与临床推理链都要用它——两处各写一遍的话，评分算作命中的诊断
+// 会在思维链里被算成「标准答案里没有」，同一个答案两种说法。
+export function matchStandardDiagnosis(standard, userText) {
+  if (userText == null) return false;
+  return norm(standard.name) === norm(userText) || synonymsOf(standard).includes(norm(userText));
+}
+export function findStandard(standards, userText) {
+  return (standards || []).find(a => matchStandardDiagnosis(a, userText)) || null;
+}
+export function findUserText(standards, standard, selected) {
+  return (selected || []).find(un => matchStandardDiagnosis(standard, un));
+}
+
 export function diagnosisAssessment(caseObj, answer, rules) {
   const answers = caseObj.sections.diagnosis || [];
   const clsMap = answer.diagClass || {};
   const selected = Object.keys(answer.diagMarks || {});
-  const findByUser = un => answers.find(a => norm(un) === norm(a.name) || synonymsOf(a).includes(norm(un)));
-  const findUser = a => selected.find(un => norm(un) === norm(a.name) || synonymsOf(a).includes(norm(un)));
+  const findByUser = un => findStandard(answers, un);
+  const findUser = a => findUserText(answers, a, selected);
 
   const totalScore = answers.reduce((s, a) => s + (a.score || 1), 0);
   let hitScore = 0;
@@ -164,25 +178,43 @@ export function diagnosisAssessment(caseObj, answer, rules) {
 }
 
 // 独立维度：证据「支持/不支持」判读。官网未给这一维分值，故只输出、不计入总分。
-export function evidenceReview(caseObj, answer) {
-  const answers = caseObj.sections.diagnosis || [];
-  const findByUser = un => answers.find(a => norm(un) === norm(a.name) || synonymsOf(a).includes(norm(un)));
+// 持久化里标记是数组、内存里是 Set，两种形状都可能出现（刷新后 / 提交前各一种）。
+export function asSet(v) { return v instanceof Set ? v : new Set(v || []); }
+
+// 逐条比对学生在一个诊断标准依据树上的判读。
+// 评分（汇总命中率）与临床推理链（逐条还原）共用这一份，
+// 否则两条链会对同一次标记给出不同的对错结论。
+export function judgeEvidence(standard, sup, uns) {
+  const units = [];
   let marked = 0, correct = 0;
-  for (const name of Object.keys(answer.diagMarks || {})) {
-    const a = findByUser(name);
-    if (!a || !a.bySrc) continue;
-    const m = answer.diagMarks[name] || {};
-    const sup = m.support instanceof Set ? m.support : new Set(m.support || []);
-    const uns = m.unsupport instanceof Set ? m.unsupport : new Set(m.unsupport || []);
-    for (const src of Object.keys(a.bySrc)) {
-      for (const u of a.bySrc[src]) {
-        const k = norm(u.text);
-        const s = sup.has(k), t = uns.has(k);
-        if (!s && !t) continue;
+  for (const src of Object.keys((standard && standard.bySrc) || {})) {
+    for (const u of standard.bySrc[src]) {
+      const k = norm(u.text);
+      const s = sup.has(k), t = uns.has(k);
+      if (s || t) {
         marked++;
         if ((u.support && s) || (!u.support && t)) correct++;
       }
+      units.push({
+        src, item: u.item, sub: u.sub, content: u.content,
+        standardSupport: !!u.support,
+        marked: s ? 'support' : t ? 'unsupport' : null,
+      });
     }
+  }
+  return { units, marked, correct, accuracy: marked ? correct / marked : null };
+}
+
+export function evidenceReview(caseObj, answer) {
+  const answers = caseObj.sections.diagnosis || [];
+  let marked = 0, correct = 0;
+  for (const name of Object.keys(answer.diagMarks || {})) {
+    const a = findStandard(answers, name);
+    if (!a || !a.bySrc) continue;
+    const m = answer.diagMarks[name] || {};
+    const r = judgeEvidence(a, asSet(m.support), asSet(m.unsupport));
+    marked += r.marked;
+    correct += r.correct;
   }
   return { marked, correct, accuracy: marked ? correct / marked : null };
 }
